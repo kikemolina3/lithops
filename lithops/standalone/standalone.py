@@ -58,7 +58,6 @@ class StandaloneHandler:
         self.backend_name = self.config['backend']
         self.start_timeout = self.config['start_timeout']
         self.exec_mode = StandaloneMode[self.config['exec_mode'].upper()]
-        self.use_master_as_worker = self.config.get('master_as_worker', False)
         self.is_lithops_worker = is_lithops_worker()
 
         module_location = f'lithops.standalone.backends.{self.backend_name}'
@@ -81,11 +80,11 @@ class StandaloneHandler:
         """
         return self.backend.is_initialized()
 
-    def build_image(self, image_name, script_file, overwrite, extra_args=[]):
+    def build_image(self, image_name, script_file, overwrite, include, extra_args=[]):
         """
         Builds a new VM Image
         """
-        self.backend.build_image(image_name, script_file, overwrite, extra_args)
+        self.backend.build_image(image_name, script_file, overwrite, include, extra_args)
 
     def delete_image(self, name):
         """
@@ -211,7 +210,12 @@ class StandaloneHandler:
         job_id = job_payload['job_id']
         total_calls = job_payload['total_calls']
 
-        if self.exec_mode != StandaloneMode.CONSUME:
+        if self.exec_mode == StandaloneMode.CONSUME:
+            logger.debug(
+                f'ExecutorID {executor_id} | JobID {job_id} - Worker processes: '
+                f'{job_payload["worker_processes"]}'
+            )
+        else:
             worker_instance_type = self.backend.get_worker_instance_type()
             worker_processes = self.backend.get_worker_cpu_count()
 
@@ -225,8 +229,10 @@ class StandaloneHandler:
             max_workers = job_payload['max_workers']
             required_workers = min(max_workers, total_calls // wp + (total_calls % wp > 0))
 
-            logger.debug('ExecutorID {} | JobID {} - Worker processes: {} - Required Workers: {}'
-                         .format(executor_id, job_id, job_payload['worker_processes'], required_workers))
+            logger.debug(
+                f'ExecutorID {executor_id} | JobID {job_id} - Instance Type: {worker_instance_type} - Worker '
+                f'processes: {job_payload["worker_processes"]} - Required Workers: {required_workers}'
+            )
 
         def create_workers(workers_to_create):
             current_workers_old = set(self.backend.workers)

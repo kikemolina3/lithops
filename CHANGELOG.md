@@ -1,9 +1,25 @@
 # Changelog
 
-## [v3.1.3.dev1]
+## [v3.2.1.dev0]
+
+### Added
+- [Core] Added a mechanism to automatically retry failed tasks, by @tomwhite
+
+### Changed
+- [AWS] Eliminated the need for access and secret keys in the configuration
+- [Tests] Moved tests from unittest to pytest
+
+### Fixed
+- [AWS Lambda] Fixed runtime deletion with "lithops runtime delete"
+- [Localhost] Fixed issue with the job manager
+- [Serilaizer] Fix serialization bug which triggers side effects on dynamic attributes, by @rabernat
+- [Worker] Removed "distutils" lib imports as it is deprectaded in python 3.12
+
+## [v3.2.0]
 
 ### Added
 - [Lithops] Addded support for Python 3.12
+- [CLI] Added "--include" parameter in "lithops image build" to allow users upload local files to the VM image
 
 ### Changed
 - [Standalone] Use redis in the master VM to store all the relevant data about jobs and workers
@@ -15,7 +31,8 @@
 ### Fixed
 - [SSH Cli] Fixed minor error with the "err" variable
 - [Cli] Fixed job status on "lithops job list" for standalone backends
-- [Standalone] Fixed issue in the "lithops image build" command that appears when the vpc is already created
+- [Standalone] Fixed issue in the "lithops image build" that appears when the vpc is already created
+- [Future] Fixed issue with missing 'worker_end_tstamp' variable
 
 ## [v3.1.2]
 

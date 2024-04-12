@@ -45,34 +45,49 @@ class AWSBatchBackend:
         self.name = 'aws_batch'
         self.type = utils.BackendType.BATCH.value
         self.aws_batch_config = aws_batch_config
-
-        self.user_key = aws_batch_config['access_key_id'][-4:]
-        self.package = f'lithops_v{__version__.replace(".", "-")}_{self.user_key}'
-        self.region_name = aws_batch_config['region']
+        self.region = aws_batch_config['region']
+        self.namespace = aws_batch_config.get('namespace')
 
         self._env_type = self.aws_batch_config['env_type']
         self._queue_name = f'{self.package}_{self._env_type.replace("_", "-")}_queue'
         self._compute_env_name = f'{self.package}_{self._env_type.replace("_", "-")}_env'
 
         logger.debug('Creating Boto3 AWS Session and Batch Client')
-        self.aws_session = boto3.Session(aws_access_key_id=aws_batch_config['access_key_id'],
-                                         aws_secret_access_key=aws_batch_config['secret_access_key'],
-                                         aws_session_token=aws_batch_config.get('session_token'),
-                                         region_name=self.region_name)
-        self.batch_client = self.aws_session.client('batch', region_name=self.region_name)
+        self.aws_session = boto3.Session(
+            aws_access_key_id=aws_batch_config.get('access_key_id'),
+            aws_secret_access_key=aws_batch_config.get('secret_access_key'),
+            aws_session_token=aws_batch_config.get('session_token'),
+            region_name=self.region
+        )
+        self.batch_client = self.aws_session.client('batch', region_name=self.region)
 
         self.internal_storage = internal_storage
 
-        if 'account_id' in self.aws_batch_config:
-            self.account_id = self.aws_batch_config['account_id']
-        else:
-            sts_client = self.aws_session.client('sts', region_name=self.region_name)
-            self.account_id = sts_client.get_caller_identity()["Account"]
+        if 'account_id' not in self.lambda_config or 'user_id' not in self.lambda_config:
+            sts_client = self.aws_session.client('sts', region_name=self.region)
+            caller_identity = sts_client.get_caller_identity()
 
-        self.ecr_client = self.aws_session.client('ecr', region_name=self.region_name)
+        if 'account_id' in self.lambda_config:
+            self.account_id = self.lambda_config['account_id']
+        else:
+            self.account_id = caller_identity["Account"]
+
+        if 'user_id' in self.lambda_config:
+            self.user_id = self.lambda_config['user_id']
+        else:
+            self.user_id = caller_identity["UserId"]
+
+        if ":" in self.user_id:  # SSO user
+            self.user_key = self.user_id.split(":")[1]
+        else:  # IAM user
+            self.user_key = self.user_id[-4:].lower()
+
+        self.ecr_client = self.aws_session.client('ecr', region_name=self.region)
+        package = f'lithops_v{__version__.replace(".", "")}_{self.user_key}'
+        self.package = f"{package}_{self.namespace}" if self.namespace else package
 
         msg = COMPUTE_CLI_MSG.format('AWS Batch')
-        logger.info("{} - Region: {}".format(msg, self.region_name))
+        logger.info(f"{msg} - Region: {self.region}")
 
     def _get_default_runtime_image_name(self):
         python_version = utils.CURRENT_PY_VERSION.replace('.', '')
@@ -81,7 +96,7 @@ class AWSBatchBackend:
 
     def _get_full_image_name(self, runtime_name):
         full_image_name = runtime_name if ':' in runtime_name else f'{runtime_name}:latest'
-        registry = f'{self.account_id}.dkr.ecr.{self.region_name}.amazonaws.com'
+        registry = f'{self.account_id}.dkr.ecr.{self.region}.amazonaws.com'
         full_image_name = '/'.join([registry, self.package.replace('-', '.'), full_image_name]).lower()
         repo_name = full_image_name.split('/', 1)[1:].pop().split(':')[0]
         return full_image_name, registry, repo_name
@@ -521,6 +536,11 @@ class AWSBatchBackend:
         return runtimes
 
     def invoke(self, runtime_name, runtime_memory, payload):
+        """
+        Invoke a job -- return information about this invocation
+        """
+        executor_id = payload['executor_id']
+        job_id = payload['job_id']
         total_calls = payload['total_calls']
         max_workers = payload['max_workers']
         chunksize = payload['chunksize']
@@ -531,6 +551,10 @@ class AWSBatchBackend:
             chunksize = total_calls // max_workers + (total_calls % max_workers > 0)
             total_workers = total_calls // chunksize + (total_calls % chunksize > 0)
             payload['chunksize'] = chunksize
+
+        logger.debug(
+            f'ExecutorID {executor_id} | JobID {job_id} - Required Workers: {total_workers}'
+        )
 
         job_name = '{}_{}'.format(self._format_jobdef_name(runtime_name, runtime_memory), payload['job_key'])
 
@@ -576,7 +600,7 @@ class AWSBatchBackend:
 
     def get_runtime_key(self, runtime_name, runtime_memory, version=__version__):
         jobdef_name = self._format_jobdef_name(runtime_name, runtime_memory, version)
-        runtime_key = os.path.join(self.name, version, self.region_name, jobdef_name)
+        runtime_key = os.path.join(self.name, version, self.region, jobdef_name)
         return runtime_key
 
     def get_runtime_info(self):
