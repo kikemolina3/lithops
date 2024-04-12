@@ -20,11 +20,7 @@ import sys
 import uuid
 import json
 import logging
-import flask
-import time
-import requests
 from functools import partial
-from multiprocessing import Value
 
 from lithops.version import __version__
 from lithops.utils import setup_lithops_logger, b64str_to_dict
@@ -33,38 +29,8 @@ from lithops.worker.utils import get_runtime_metadata
 from lithops.constants import JOBS_PREFIX
 from lithops.storage.storage import InternalStorage
 
-from lithops.serverless.backends.k8s import config
 
 logger = logging.getLogger('lithops.worker')
-
-proxy = flask.Flask(__name__)
-
-JOB_INDEXES = {}
-
-
-@proxy.route('/get-range/<jobkey>/<total_calls>/<chunksize>', methods=['GET'])
-def get_range(jobkey, total_calls, chunksize):
-    global JOB_INDEXES
-
-    range_start = 0 if jobkey not in JOB_INDEXES else JOB_INDEXES[jobkey]
-    range_end = min(range_start + int(chunksize), int(total_calls))
-    JOB_INDEXES[jobkey] = range_end
-
-    range = "-1" if range_start == int(total_calls) else f'{range_start}-{range_end}'
-    remote_host = flask.request.remote_addr
-    proxy.logger.info(f'Sending range "{range}" to Host {remote_host}')
-
-    return range
-
-
-def run_master_server():
-    # Start Redis Server in the background
-    # logger.info("Starting redis server in Master Pod")
-    # os.system("redis-server --bind 0.0.0.0 --daemonize yes")
-    # logger.info("Redis server started")
-
-    proxy.logger.setLevel(logging.DEBUG)
-    proxy.run(debug=True, host='0.0.0.0', port=config.MASTER_PORT, use_reloader=False)
 
 
 def extract_runtime_meta(payload):
@@ -79,123 +45,32 @@ def extract_runtime_meta(payload):
     internal_storage.put_data(status_key, dmpd_response_status)
 
 
-def run_job_k8s(payload):
+def on_received_work(channel, method, properties, body):
+    logger.info(f"Received new job from the queue")
+    function_handler(json.loads(body))
+    channel.basic_ack(delivery_tag=method.delivery_tag)
+
+
+def start_worker(payload):
     logger.info(f"Lithops v{__version__} - Starting kubernetes execution")
 
     os.environ['__LITHOPS_ACTIVATION_ID'] = str(uuid.uuid4()).replace('-', '')[:12]
     os.environ['__LITHOPS_BACKEND'] = 'k8s'
 
-    total_calls = payload['total_calls']
-    job_key = payload['job_key']
-    chunksize = payload['chunksize']
-
-    call_ids = payload['call_ids']
-    data_byte_ranges = payload['data_byte_ranges']
-
-    master_ip = os.environ['MASTER_POD_IP']
-
-    job_finished = False
-    while not job_finished:
-        call_ids_range = None
-
-        while call_ids_range is None:
-            try:
-                server = f'http://{master_ip}:{config.MASTER_PORT}'
-                url = f'{server}/get-range/{job_key}/{total_calls}/{chunksize}'
-                res = requests.get(url, timeout=0.1)
-                call_ids_range = res.text  # for example: 0-5
-            except Exception:
-                time.sleep(0.1)
-
-        logger.info(f"Received range: {call_ids_range}")
-        if call_ids_range == "-1":
-            job_finished = True
-            continue
-
-        start, end = map(int, call_ids_range.split('-'))
-        dbr = [data_byte_ranges[int(call_id)] for call_id in call_ids[start:end]]
-        payload['call_ids'] = call_ids[start:end]
-        payload['data_byte_ranges'] = dbr
-        function_handler(payload)
-
-    logger.info("Finishing kubernetes execution")
-
-
-def run_job_k8s_rabbitmq(payload, running_jobs):
-    logger.info(f"Lithops v{__version__} - Starting kubernetes execution")
-
-    act_id = str(uuid.uuid4()).replace('-', '')[:12]
-    os.environ['__LITHOPS_ACTIVATION_ID'] = act_id
-    os.environ['__LITHOPS_BACKEND'] = 'k8s_rabbitmq'
-
-    function_handler(payload)
-    running_jobs.value += len(payload['call_ids'])
-
-    logger.info("Finishing kubernetes execution")
-
-
-def callback_work_queue(ch, method, properties, body):
-    """Callback to receive the payload and run the jobs"""
-    global cpus_pod
-
-    logger.info("Call from lithops received.")
-
-    message = json.loads(body)
-    tasks = message['total_calls']
-
-    running_jobs = Value('i', cpus_pod)  # Shared variable to track completed jobs
-
-    # If there are more tasks than cpus in the pod, we need to send a new message
-    if tasks <= running_jobs.value:
-        processes_to_start = tasks
-    else:
-        processes_to_start = running_jobs.value
-
-        message_to_send = message.copy()
-        message_to_send['total_calls'] = tasks - running_jobs.value
-        message_to_send['call_ids'] = message_to_send['call_ids'][running_jobs.value:]
-        message_to_send['data_byte_ranges'] = message_to_send['data_byte_ranges'][running_jobs.value:]
-
-        message['total_calls'] = running_jobs.value
-        message['call_ids'] = message['call_ids'][:running_jobs.value]
-        message['data_byte_ranges'] = message['data_byte_ranges'][:running_jobs.value]
-
-        ch.basic_publish(
-            exchange='',
-            routing_key='task_queue',
-            body=json.dumps(message_to_send),
-            properties=pika.BasicProperties(
-                delivery_mode=pika.spec.PERSISTENT_DELIVERY_MODE
-            ))
-
-    logger.info(f"Starting {processes_to_start} processes")
-
-    message['worker_processes'] = running_jobs.value
-    running_jobs.value -= processes_to_start
-    run_job_k8s_rabbitmq(message, running_jobs)
-
-    logger.info("All processes completed")
-    ch.basic_ack(delivery_tag=method.delivery_tag)
-
-
-def start_rabbitmq_listening(payload):
-    global cpus_pod
-
-    # Connect to rabbitmq
     params = pika.URLParameters(payload['amqp_url'])
     connection = pika.BlockingConnection(params)
     channel = connection.channel()
-    channel.queue_declare(queue='task_queue', durable=True)
+    channel.queue_declare(queue=payload['queue_uuid'], durable=True)
     channel.basic_qos(prefetch_count=1)
 
-    # Get the number of cpus of the pod
-    cpus_pod = payload['cpus_pod']
-
-    # Start listening to the new job
-    channel.basic_consume(queue='task_queue', on_message_callback=callback_work_queue)
-
-    logger.info("Listening to rabbitmq...")
-    channel.start_consuming()
+    if payload['fixed_setup']:
+        channel.basic_consume(queue=payload['queue_uuid'], on_message_callback=on_received_work)
+        logger.info("Static k8s worker started...")
+        channel.start_consuming()
+    else:
+        method, properties, body = channel.basic_get(queue=payload['queue_uuid'], auto_ack=False)
+        on_received_work(channel, method, properties, body)
+        logger.info("Finishing kubernetes execution")
 
 
 if __name__ == '__main__':
@@ -207,9 +82,7 @@ if __name__ == '__main__':
 
     switcher = {
         'get_metadata': partial(extract_runtime_meta, payload),
-        'run_job': partial(run_job_k8s, payload),
-        'run_master': run_master_server,
-        'start_rabbitmq': partial(start_rabbitmq_listening, payload)
+        'run_job': partial(start_worker, payload)
     }
 
     func = switcher.get(action, lambda: "Invalid command")

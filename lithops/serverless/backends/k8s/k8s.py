@@ -16,6 +16,7 @@
 
 import os
 import re
+import uuid
 import pika
 import base64
 import hashlib
@@ -37,9 +38,49 @@ from lithops.constants import COMPUTE_CLI_MSG, JOBS_PREFIX
 
 from . import config
 
-
 logger = logging.getLogger(__name__)
 urllib3.disable_warnings()
+
+
+def get_k8s_activations(job_payload):
+    total_calls = job_payload['total_calls']
+    chunksize = job_payload['chunksize']
+    max_workers = job_payload['max_workers']
+    total_workers = min(max_workers, total_calls // chunksize + (total_calls % chunksize > 0))
+    payloads = []
+    times, res = divmod(total_calls, chunksize)
+    for i in range(total_workers):
+        num_tasks = chunksize if i < times else res
+        payload_edited = job_payload.copy()
+        start_index = i * chunksize
+        end_index = start_index + num_tasks
+        payload_edited['call_ids'] = payload_edited['call_ids'][start_index:end_index]
+        payload_edited['data_byte_ranges'] = payload_edited['data_byte_ranges'][start_index:end_index]
+        payload_edited['total_calls'] = num_tasks
+        payloads.append(payload_edited)
+
+    return payloads
+
+
+def get_fixed_setup_activations(payload, nodes):
+    total_calls = payload['total_calls']
+    total_cpu = sum([int(float(node["cpu"])) for node in nodes])
+    payloads = []
+
+    for index, node in enumerate(nodes):
+        last_index = 0 if index == 0 else int(payloads[-1]['call_ids'][-1])
+        num_calls = round(float(node["cpu"]) / total_cpu * total_calls)
+        if index == len(nodes) - 1:
+            num_calls = total_calls - 1 - last_index
+        start_index = 0 if index == 0 else last_index + 1
+        end_index = start_index + num_calls
+        payload_edited = payload.copy()
+        payload_edited['worker_processes'] = int(node["cpu"])
+        payload_edited['call_ids'] = payload_edited['call_ids'][start_index:end_index]
+        payload_edited['data_byte_ranges'] = payload_edited['data_byte_ranges'][start_index:end_index]
+        payloads.append(payload_edited)
+
+    return payloads
 
 
 class KubernetesBackend:
@@ -61,7 +102,6 @@ class KubernetesBackend:
         self.cluster = k8s_config.get('cluster', 'default')
         self.user = k8s_config.get('user', 'default')
         self.master_name = k8s_config.get('master_name', config.MASTER_NAME)
-        self.rabbitmq_executor = self.k8s_config.get('rabbitmq_executor', False)
 
         if os.path.exists(self.kubecfg_path):
             logger.debug(f"Loading kubeconfig file: {self.kubecfg_path}")
@@ -90,20 +130,11 @@ class KubernetesBackend:
         self.k8s_config['user'] = self.user
         self.k8s_config['master_name'] = self.master_name
 
+        self.fixed_setup = self.k8s_config.get('fixed_setup', False)
+        self.control_plane = self.k8s_config['control_plane']
+
         self.batch_api = client.BatchV1Api()
         self.core_api = client.CoreV1Api()
-
-        if self.rabbitmq_executor:
-            self.amqp_url = self.k8s_config['amqp_url']
-
-            # Init rabbitmq
-            params = pika.URLParameters(self.amqp_url)
-            self.connection = pika.BlockingConnection(params)
-            self.channel = self.connection.channel()
-
-            # Define some needed variables
-            self._get_nodes()
-            self.image = ""
 
         self.jobs = []  # list to store executed jobs (job_keys)
 
@@ -255,14 +286,14 @@ class KubernetesBackend:
         logger.debug('Cleaning lithops resources in kubernetes')
 
         try:
-            self._delete_workers()
+            self._delete_fixed_setup_workers()
             jobs = self.batch_api.list_namespaced_job(
                 namespace=self.namespace,
                 label_selector=f'user={self.user}'
             )
             for job in jobs.items:
-                if job.metadata.labels['type'] == 'lithops-worker'\
-                   and (job.status.completion_time is not None or all):
+                if job.metadata.labels['type'] == 'lithops-worker' \
+                        and (job.status.completion_time is not None or all):
                     job_name = job.metadata.name
                     logger.debug(f'Deleting job {job_name}')
                     try:
@@ -273,6 +304,10 @@ class KubernetesBackend:
                         )
                     except ApiException:
                         pass
+
+            self.core_api.delete_namespaced_service(namespace=self.namespace, name=self.master_name)
+            client.AppsV1Api().delete_namespaced_deployment(name=self.master_name, namespace=self.namespace)
+
         except ApiException:
             pass
 
@@ -307,335 +342,183 @@ class KubernetesBackend:
         logger.debug('Note that this backend does not manage runtimes')
         return []
 
-    def _create_pod(self, pod, pod_name, cpu, memory):
-        pod["metadata"]["name"] = f"lithops-pod-{pod_name}"
-        node_name = re.sub(r'-\d+$', '', pod_name)
-        pod["spec"]["nodeName"] = node_name
-        pod["spec"]["containers"][0]["image"] = self.image
-        pod["spec"]["containers"][0]["resources"]["requests"]["cpu"] = str(cpu)
-        pod["spec"]["containers"][0]["resources"]["requests"]["memory"] = memory
-        pod["metadata"]["labels"] = {"app": "lithops-pod"}
-
-        payload = {
-            'log_level': 'DEBUG',
-            'amqp_url': self.amqp_url,
-            'cpus_pod': cpu,
-        }
-
-        pod["spec"]["containers"][0]["args"][1] = "start_rabbitmq"
-        pod["spec"]["containers"][0]["args"][2] = utils.dict_to_b64str(payload)
-
-        self.core_api.create_namespaced_pod(body=pod, namespace=self.namespace)
-
-    def _get_nodes(self):
+    def _inspect_nodes(self):
         self.nodes = []
-        list_all_nodes = self.core_api.list_node()
-        for node in list_all_nodes.items:
-            # If the node is tainted, skip it
+        for node in self.core_api.list_node().items:
             if node.spec.taints:
                 continue
 
-            # Check if the CPU is in millicores
-            if isinstance(node.status.allocatable['cpu'], str) and 'm' in node.status.allocatable['cpu']:
-                # Extract the number part and convert it to an integer
-                number_match = re.search(r'\d+', node.status.allocatable['cpu'])
-                if number_match:
-                    number = int(number_match.group())
-
-                    # Round to the nearest whole number of CPUs - 1
-                    cpu_info = round(number / 1000) - 1
-
-                    if cpu_info < 1:
-                        cpu_info = 0
-                else:
-                    # Handle the case where the CPU is in millicores but no number is found
-                    cpu_info = 0
+            allocatable_cpu = node.status.allocatable['cpu']
+            if allocatable_cpu.endswith('m'):
+                allocatable_cpu = int(float(allocatable_cpu[:-1]) / 1000)
             else:
-                # CPU is not in millicores
-                cpu_info = node.status.allocatable['cpu']
+                allocatable_cpu = int(float(allocatable_cpu))
+
+            mem_num, mem_uni = re.match(r'(\d+)(\D*)', node.status.allocatable['memory']).groups()
+            mem_num = int(float(mem_num) * 0.8)
 
             self.nodes.append({
                 "name": node.metadata.name,
-                "cpu": cpu_info,
-                "memory": node.status.allocatable['memory']
+                "cpu": int(allocatable_cpu * 0.9),
+                "memory": f"{mem_num}{mem_uni}"
             })
 
-    def _create_workers(self, runtime_memory):
-        default_pod_config = yaml.load(config.POD, Loader=yaml.loader.SafeLoader)
-        granularity = self.k8s_config['worker_processes']
-        cluster_info_cpu = {}
-        cluster_info_mem = {}
-        num_cpus_cluster = 0
+    def _create_fixed_setup_workers(self, docker_image_name, job_payload):
+        pods_running = self.core_api.list_namespaced_pod(
+            namespace=self.namespace,
+            label_selector=f"app=lithops-fixed-setup,user={self.user}"
+        ).items
+        docker_image_labels = [pod.metadata.labels['docker-image'] for pod in pods_running]
+        if pods_running:
+            if any(docker_image_name.replace(":", "-").replace("/", "-") not in label for label in docker_image_labels):
+                self._delete_fixed_setup_workers()
+                logger.info("Restoring fixed setup workers due to docker image change")
+            else:
+                logger.info("Fixed setup workers already running")
+                return
 
-        if granularity <= 1:
-            granularity = False
+        pod = yaml.load(config.POD, Loader=yaml.loader.SafeLoader)
 
         for node in self.nodes:
-            cpus_node = int(float(node["cpu"]) * 0.9)
+            pod_name = node["name"]
+            pod["metadata"]["name"] = f"lithops-fixed-setup-{pod_name}"
+            node_name = re.sub(r'-\d+$', '', pod_name)
+            pod["spec"]["nodeName"] = node_name
+            pod["spec"]["containers"][0]["image"] = docker_image_name
+            pod["spec"]["containers"][0]["resources"]["requests"]["cpu"] = str(node["cpu"])
+            pod["spec"]["containers"][0]["resources"]["requests"]["memory"] = node["memory"]
+            pod["metadata"]["labels"] = {"app": "lithops-fixed-setup", "user": self.user,
+                                         "docker-image": docker_image_name.replace(":", "-").replace("/", "-")}
+            pod["spec"]["containers"][0]["args"][1] = "run_job"
+            pod["spec"]["containers"][0]["args"][2] = utils.dict_to_b64str(job_payload)
+            self.core_api.create_namespaced_pod(body=pod, namespace=self.namespace)
 
-            if granularity:
-                times, res = divmod(cpus_node, granularity)
+        logger.info(f"Kubernetes fixed setup will run with {sum([node['cpu'] for node in self.nodes])} CPUs")
 
-                for i in range(times):
-                    cluster_info_cpu[f"{node['name']}-{i}"] = granularity
-                    cluster_info_mem[f"{node['name']}-{i}"] = runtime_memory
-                    num_cpus_cluster += granularity
-                if res != 0:
-                    cluster_info_cpu[f"{node['name']}-{times}"] = res
-                    cluster_info_mem[f"{node['name']}-{times}"] = runtime_memory
-                    num_cpus_cluster += res
-            else:
-                cluster_info_cpu[node["name"] + "-0"] = cpus_node
-                num_cpus_cluster += cpus_node
-
-                # If runtime_memory is not defined in the config, use 80% of the node memory
-                if runtime_memory == 512:
-                    mem_num, mem_uni = re.match(r'(\d+)(\D*)', node["memory"]).groups()
-                    mem_num = int(float(mem_num) * 0.8)
-                    cluster_info_mem[node["name"] + "-0"] = f"{mem_num}{mem_uni}"
-                else:
-                    cluster_info_mem[node["name"] + "-0"] = str(runtime_memory)
-
-        if num_cpus_cluster == 0:
-            raise ValueError("Total CPUs of the cluster cannot be 0")
-
-        # Create all the pods
-        for pod_name in cluster_info_cpu.keys():
-            self._create_pod(default_pod_config, pod_name, cluster_info_cpu[pod_name], cluster_info_mem[pod_name])
-
-        logger.info(f"Total cpus of the cluster: {num_cpus_cluster}")
-
-    def _delete_workers(self):
-        list_pods = self.core_api.list_namespaced_pod(self.namespace, label_selector="app=lithops-pod")
-        for pod in list_pods.items:
-            self.core_api.delete_namespaced_pod(pod.metadata.name, self.namespace)
-
-        # Wait until all pods are deleted
-        while True:
-            list_pods = self.core_api.list_namespaced_pod(self.namespace, label_selector="app=lithops-pod")
-
-            if not list_pods.items:
-                break  # All pods are deleted
-
-        logger.info('All pods are deleted.')
-
-    def _start_master(self, docker_image_name):
-
+    def _start_master(self):
         master_pod = self.core_api.list_namespaced_pod(
             namespace=self.namespace,
-            label_selector=f"job-name={self.master_name}"
+            label_selector=f"app={self.master_name}"
         )
 
         if len(master_pod.items) > 0:
-            return master_pod.items[0].status.pod_ip
+            return
 
         logger.debug('Starting Lithops master Pod')
         try:
-            self.batch_api.delete_namespaced_job(
-                name=self.master_name,
-                namespace=self.namespace,
-                propagation_policy='Background'
-            )
-            time.sleep(2)
+            client.AppsV1Api().delete_namespaced_deployment(
+                name=self.master_name, namespace=self.namespace)
         except ApiException:
             pass
 
-        master_res = yaml.safe_load(config.JOB_DEFAULT)
+        yaml_file = yaml.safe_load_all(config.RABBITMQ_DEPLOYMENT)
+        master_res = next(yaml_file)
+        service_res = next(yaml_file)
+
         master_res['metadata']['name'] = self.master_name
         master_res['metadata']['namespace'] = self.namespace
         master_res['metadata']['labels']['version'] = 'lithops_v' + __version__
         master_res['metadata']['labels']['user'] = self.user
+        master_res['spec']['selector']['matchLabels']['app'] = self.master_name
+        master_res['spec']['template']['metadata']['labels']['app'] = self.master_name
 
         container = master_res['spec']['template']['spec']['containers'][0]
-        container['image'] = docker_image_name
-        container['env'][0]['value'] = 'run_master'
+        container['name'] = self.master_name
 
-        payload = {'log_level': 'DEBUG'}
-        container['env'][1]['value'] = utils.dict_to_b64str(payload)
-
-        if not all(key in self.k8s_config for key in ["docker_user", "docker_password"]):
-            del master_res['spec']['template']['spec']['imagePullSecrets']
+        service_res['metadata']['name'] = self.master_name
+        service_res['spec']['selector']['app'] = self.master_name
 
         try:
-            self.batch_api.create_namespaced_job(
+            client.AppsV1Api().create_namespaced_deployment(
                 namespace=self.namespace,
                 body=master_res
             )
+            self.core_api.create_namespaced_service(self.namespace, service_res)
         except ApiException as e:
             raise e
 
-        logger.debug('Waiting Lithops master pod to be ready')
+        logger.debug(f"K8s master deployment {self.master_name} created. Waiting for the pod to be ready")
+
         w = watch.Watch()
         for event in w.stream(self.core_api.list_namespaced_pod,
                               namespace=self.namespace,
-                              label_selector=f"job-name={self.master_name}"):
+                              label_selector=f"app={self.master_name}"):
             if event['object'].status.phase == "Running":
                 w.stop()
-                return event['object'].status.pod_ip
-
-    # Detect if granularity, memory or runtime image changed or not
-    def _has_config_changed(self, runtime_mem):
-        config_granularity = False if self.k8s_config['worker_processes'] <= 1 else self.k8s_config['worker_processes']
-        config_memory = self.k8s_config['runtime_memory'] if self.k8s_config['runtime_memory'] != 512 else False
-
-        self.current_runtime = ""
-
-        list_pods = self.core_api.list_namespaced_pod(self.namespace, label_selector="app=lithops-pod")
-
-        for pod in list_pods.items:
-            pod_name = pod.metadata.name
-
-            # Get the node info where the pod is running
-            node_info = next((node for node in self.nodes if node["name"] == pod.spec.node_name), False)
-            if not node_info:
-                return True
-
-            # Get the pod info
-            self.current_runtime = pod.spec.containers[0].image
-            pod_resource_cpu = int(pod.spec.containers[0].resources.requests.get('cpu', '0m'))
-            pod_resource_memory = pod.spec.containers[0].resources.requests.get('memory', '0Mi')
-
-            multiples_pods_per_node = re.search(r'-\d+(?<!-0)$', pod_name)
-
-            node_cpu = int(float(node_info["cpu"]) * 0.9)
-            node_mem_num, node_mem_uni = re.match(r'(\d+)(\D*)', node_info["memory"]).groups()
-            pod_mem_num, pod_mem_uni = re.match(r'(\d+)(\D*)', pod_resource_memory).groups()
-
-            pod_mem_num = int(pod_mem_num)
-            node_mem_num = int(float(node_mem_num) * 0.8)
-
-            # There are pods with cpu granularity
-            if multiples_pods_per_node:
-                # Is lithops pod with granularity and the user doesn't want it
-                if not config_granularity:
-                    return True
-                # There is granularity but the pod doesn't have the default memory
-                if not config_memory and pod_mem_num != runtime_mem:
-                    return True
-                # There is granularity but the pod doesn't have the desired memory
-                if config_memory and pod_mem_num != config_memory:
-                    return True
-            else:
-                # There is a custom memory but the pod doesn't have the desired memory
-                if config_memory:
-                    if pod_mem_num != config_memory:
-                        return True
-                # The pod has custom_memory and the user doesn't want it
-                else:
-                    if pod_mem_num != node_mem_num and pod_mem_num != runtime_mem:
-                        return True
-
-            # The cpu granularity changed
-            if config_granularity:
-                node_granularity_cpu = node_cpu % config_granularity
-                if pod_resource_cpu != config_granularity and pod_resource_cpu != node_granularity_cpu:
-                    return True
-
-        # The runtime image changed
-        if self.current_runtime and self.current_runtime != self.image:
-            return True
-
-        return False
+                return
 
     def invoke(self, docker_image_name, runtime_memory, job_payload):
-        """
-        Invoke -- return information about this invocation
-        For array jobs only remote_invocator is allowed
-        """
-        if self.rabbitmq_executor:
-            self.image = docker_image_name
-            config_changed = self._has_config_changed(runtime_memory)
-
-            if config_changed:
-                logger.debug("Waiting for kubernetes to change the configuration")
-                self._delete_workers()
-                self._create_workers(runtime_memory)
-
-            # First init
-            elif self.current_runtime != self.image:
-                self._create_workers(runtime_memory)
-
-            job_key = job_payload['job_key']
-            self.jobs.append(job_key)
-
-            # Send packages of tasks to the queue
-            granularity = job_payload['total_calls'] // len(self.nodes) \
-                if self.k8s_config['worker_processes'] <= 1 else self.k8s_config['worker_processes']
-            times, res = divmod(job_payload['total_calls'], granularity)
-
-            for i in range(times + (1 if res != 0 else 0)):
-                num_tasks = granularity if i < times else res
-                payload_edited = job_payload.copy()
-
-                start_index = i * granularity
-                end_index = start_index + num_tasks
-
-                payload_edited['call_ids'] = payload_edited['call_ids'][start_index:end_index]
-                payload_edited['data_byte_ranges'] = payload_edited['data_byte_ranges'][start_index:end_index]
-                payload_edited['total_calls'] = num_tasks
-
-                self.channel.basic_publish(
-                    exchange='',
-                    routing_key='task_queue',
-                    body=json.dumps(payload_edited),
-                    properties=pika.BasicProperties(
-                        delivery_mode=pika.spec.PERSISTENT_DELIVERY_MODE
-                    ))
-
-            activation_id = f'lithops-{job_key.lower()}'
+        self._start_master()
+        # TODO: change _uuid by other name
+        queue_uuid = self.user
+        self._init_rabbitmq(queue_uuid)
+        activation_payload = {
+            "log_level": logger.getEffectiveLevel(),
+            "queue_uuid": queue_uuid,
+            "amqp_url": self.amqp_url,
+            "fixed_setup": self.fixed_setup,
+        }
+        if self.fixed_setup:
+            self._inspect_nodes()
+            payloads = get_fixed_setup_activations(job_payload, self.nodes)
+            self._create_fixed_setup_workers(docker_image_name, activation_payload)
         else:
-            master_ip = self._start_master(docker_image_name)
+            payloads = get_k8s_activations(job_payload)
+            self._create_job(docker_image_name, job_payload, activation_payload, runtime_memory)
+        for payload in payloads:
+            self.publish_to_queue(payload, queue_uuid)
 
-            max_workers = job_payload['max_workers']
-            executor_id = job_payload['executor_id']
-            job_id = job_payload['job_id']
-
-            job_key = job_payload['job_key']
-            self.jobs.append(job_key)
-
-            total_calls = job_payload['total_calls']
-            chunksize = job_payload['chunksize']
-            total_workers = min(max_workers, total_calls // chunksize + (total_calls % chunksize > 0))
-
-            activation_id = f'lithops-{job_key.lower()}'
-
-            job_res = yaml.safe_load(config.JOB_DEFAULT)
-            job_res['metadata']['name'] = activation_id
-            job_res['metadata']['namespace'] = self.namespace
-            job_res['metadata']['labels']['version'] = 'lithops_v' + __version__
-            job_res['metadata']['labels']['user'] = self.user
-
-            job_res['spec']['activeDeadlineSeconds'] = self.k8s_config['runtime_timeout']
-            job_res['spec']['parallelism'] = total_workers
-
-            container = job_res['spec']['template']['spec']['containers'][0]
-            container['image'] = docker_image_name
-            if not docker_image_name.endswith(':latest'):
-                container['imagePullPolicy'] = 'IfNotPresent'
-
-            container['env'][0]['value'] = 'run_job'
-            container['env'][1]['value'] = utils.dict_to_b64str(job_payload)
-            container['env'][2]['value'] = master_ip
-
-            container['resources']['requests']['memory'] = f'{runtime_memory}Mi'
-            container['resources']['requests']['cpu'] = str(self.k8s_config['runtime_cpu'])
-            container['resources']['limits']['memory'] = f'{runtime_memory}Mi'
-            container['resources']['limits']['cpu'] = str(self.k8s_config['runtime_cpu'])
-
-            logger.debug(f'ExecutorID {executor_id} | JobID {job_id} - Going '
-                         f'to run {total_calls} activations in {total_workers} workers')
-
-            if not all(key in self.k8s_config for key in ["docker_user", "docker_password"]):
-                del job_res['spec']['template']['spec']['imagePullSecrets']
-
+    def _init_rabbitmq(self, queue_uuid):
+        while True:
             try:
-                self.batch_api.create_namespaced_job(
-                    namespace=self.namespace,
-                    body=job_res
-                )
-            except ApiException as e:
-                raise e
+                # TODO: change guest by user name
+                self.amqp_url = f"amqp://guest:guest@{self.control_plane}:30000"
+                self.connection = pika.BlockingConnection(pika.URLParameters(self.amqp_url))
+                self.channel = self.connection.channel()
+                self.channel.queue_declare(queue=queue_uuid, durable=True)
+                logger.debug(f"Lithops master pod is ready")
+                break
+            except pika.exceptions.AMQPConnectionError:
+                time.sleep(1)
 
+    def _create_job(self, docker_image_name, job_payload, activation_payload, runtime_memory):
+        max_workers = job_payload['max_workers']
+        executor_id = job_payload['executor_id']
+        job_id = job_payload['job_id']
+        job_key = job_payload['job_key']
+        self.jobs.append(job_key)
+        total_calls = job_payload['total_calls']
+        chunksize = job_payload['chunksize']
+        total_workers = min(max_workers, total_calls // chunksize + (total_calls % chunksize > 0))
+        activation_id = f'lithops-{job_key.lower()}'
+        job_res = yaml.safe_load(config.JOB_DEFAULT)
+        job_res['metadata']['name'] = activation_id
+        job_res['metadata']['namespace'] = self.namespace
+        job_res['metadata']['labels']['version'] = 'lithops_v' + __version__
+        job_res['metadata']['labels']['user'] = self.user
+        job_res['spec']['activeDeadlineSeconds'] = self.k8s_config['runtime_timeout']
+        job_res['spec']['parallelism'] = total_workers
+        container = job_res['spec']['template']['spec']['containers'][0]
+        container['image'] = docker_image_name
+        if not docker_image_name.endswith(':latest'):
+            container['imagePullPolicy'] = 'IfNotPresent'
+        container['env'][0]['value'] = 'run_job'
+        container['env'][1]['value'] = utils.dict_to_b64str(activation_payload)
+        container['resources']['requests']['memory'] = f'{runtime_memory}Mi'
+        container['resources']['requests']['cpu'] = str(self.k8s_config['runtime_cpu'])
+        container['resources']['limits']['memory'] = f'{runtime_memory}Mi'
+        container['resources']['limits']['cpu'] = str(self.k8s_config['runtime_cpu'])
+        logger.debug(f'ExecutorID {executor_id} | JobID {job_id} - Going '
+                     f'to run {total_calls} activations in {total_workers} workers')
+        if not all(key in self.k8s_config for key in ["docker_user", "docker_password"]):
+            del job_res['spec']['template']['spec']['imagePullSecrets']
+        try:
+            self.batch_api.create_namespaced_job(
+                namespace=self.namespace,
+                body=job_res
+            )
+        except ApiException as e:
+            raise e
         return activation_id
 
     def _generate_runtime_meta(self, docker_image_name):
@@ -751,3 +634,19 @@ class KubernetesBackend:
         }
 
         return runtime_info
+
+    def publish_to_queue(self, payload, queue_uuid):
+        self.channel.basic_publish(
+            exchange='',
+            routing_key=queue_uuid,
+            body=json.dumps(payload),
+            properties=pika.BasicProperties(
+                delivery_mode=pika.spec.PERSISTENT_DELIVERY_MODE
+            ))
+
+    def _delete_fixed_setup_workers(self):
+        fixed_size_pods = (self.core_api.
+                           list_namespaced_pod(self.namespace,
+                                               label_selector=f"app=lithops-fixed-setup,user={self.user}"))
+        for pod in fixed_size_pods.items:
+            self.core_api.delete_namespaced_pod(pod.metadata.name, self.namespace)

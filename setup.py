@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+from requests import __version__
 from setuptools import setup, find_packages
 from itertools import chain
 

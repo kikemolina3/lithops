@@ -115,6 +115,47 @@ spec:
         - name: lithops-regcred
 """
 
+RABBITMQ_DEPLOYMENT = """
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rabbitmq
+  labels:
+    version: <VERSION>
+    user: <USER>
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rabbitmq
+  template:
+    metadata:
+      labels:
+        app: rabbitmq
+    spec:
+      containers:
+        - name: rabbitmq
+          image: rabbitmq:3-management
+          ports:
+            - containerPort: 5672
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq
+spec:
+  selector:
+    app: rabbitmq
+  ports:
+    - protocol: TCP
+      port: 5672
+      targetPort: 5672
+      nodePort: 30000 # You can choose any available port here
+      name: amqp
+  type: NodePort
+"""
+
+
 POD = """
 apiVersion: v1
 kind: Pod
@@ -124,6 +165,7 @@ spec:
   containers:
     - name: "lithops-worker"
       image: "<INPUT>"
+      imagePullPolicy: Always
       command: ["python3"]
       args:
         - "/lithops/lithopsentry.py"
