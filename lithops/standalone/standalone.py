@@ -60,6 +60,10 @@ class StandaloneHandler:
         self.exec_mode = StandaloneMode[self.config['exec_mode'].upper()]
         self.is_lithops_worker = is_lithops_worker()
 
+        self.profiling = self.config['profiling']
+        if self.profiling:
+            self.exec_mode = StandaloneMode.PROFILED
+
         module_location = f'lithops.standalone.backends.{self.backend_name}'
         sb_module = importlib.import_module(module_location)
         StandaloneBackend = getattr(sb_module, 'StandaloneBackend')
@@ -73,6 +77,11 @@ class StandaloneHandler:
         Initialize the backend and create/start the master VM instance
         """
         self.backend.init()
+        # NOTE-SCHEDULING: Blocking execution until master VM ready
+        # if self.exec_mode == StandaloneMode.PROFILED:
+        #     self.backend.master.wait_ready()
+        #     self._validate_master_service_setup()
+        #     self._wait_master_service_ready()
 
     def is_initialized(self):
         """
@@ -280,6 +289,11 @@ class StandaloneHandler:
                 logger.debug(f'Going to create {workers_to_create} new workers')
                 new_workers = create_workers(workers_to_create)
                 total_workers += len(new_workers)
+
+        # NOTE-SCHEDULING: VMs are managed by master VM in profiled mode
+        elif self.exec_mode == StandaloneMode.PROFILED:
+            total_workers = 'profiled'
+            logger.debug("Worker management delegated to master VM")
 
         if total_workers == 0:
             raise Exception('It was not possible to create any worker')

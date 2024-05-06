@@ -74,6 +74,7 @@ class FunctionExecutor:
         storage: Optional[str] = None,
         monitoring: Optional[str] = None,
         log_level: Optional[str] = False,
+        profiling: Optional[list[dict]] = False,
         **kwargs: Optional[Dict[str, Any]]
     ):
         self.is_lithops_worker = is_lithops_worker()
@@ -126,6 +127,9 @@ class FunctionExecutor:
             serverless_config = extract_serverless_config(self.config)
             self.compute_handler = ServerlessHandler(serverless_config, self.internal_storage)
         elif self.mode == STANDALONE:
+            # NOTE-SCHEDULING: Add profiling data to standalone config
+            if profiling:
+                self.config['profiling'] = profiling
             standalone_config = extract_standalone_config(self.config)
             self.compute_handler = StandaloneHandler(standalone_config)
 

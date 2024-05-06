@@ -100,7 +100,10 @@ class BudgetKeeper(threading.Thread):
                 self.time_to_dismantle = int(self.hard_dismantle_timeout - time_since_last_usage)
                 jobs_running = True
 
-            if self.time_to_dismantle > 0:
+            if self.exec_mode == 'profiled':
+                logger.info("Dummy sleeping BudgetKeeper in profiled mode")
+                time.sleep(60)
+            elif self.time_to_dismantle > 0:
                 logger.debug(f"Time to dismantle: {self.time_to_dismantle} seconds")
                 check_interval = min(60, max(self.time_to_dismantle / 10, 1))
                 time.sleep(check_interval)

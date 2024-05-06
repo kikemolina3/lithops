@@ -270,5 +270,6 @@ def extract_standalone_config(config):
     sa_config['backend'] = backend
     sa_config[backend] = config[backend] if backend in config and config[backend] else {}
     sa_config[backend]['user_agent'] = f'lithops/{__version__}'
+    sa_config['profiling'] = config.get('profiling', [])
 
     return sa_config

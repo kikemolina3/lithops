@@ -31,6 +31,7 @@ from gevent.pywsgi import WSGIServer
 from threading import Thread
 from concurrent.futures import ThreadPoolExecutor
 
+from lithops.standalone.scheduler import ProactiveScheduler
 from lithops.version import __version__
 from lithops.localhost import LocalhostHandler
 from lithops.standalone import LithopsValidationError
@@ -66,6 +67,8 @@ log_format = "%(asctime)s\t[%(levelname)s] %(name)s:%(lineno)s -- %(message)s"
 setup_lithops_logger(logging.DEBUG, filename=SA_MASTER_LOG_FILE, log_format=log_format)
 logger = logging.getLogger('lithops.standalone.master')
 
+logger.info(f"Starting Lithops Master - v{__version__}")
+
 app = flask.Flask(__name__)
 
 MAX_INSTANCE_CREATE_RETRIES = 2
@@ -74,6 +77,7 @@ JOB_MONITOR_CHECK_INTERVAL = 1
 redis_client = None
 budget_keeper = None
 master_ip = None
+proactive_scheduler: ProactiveScheduler | None = None
 
 
 # /---------------------------------------------------------------------------/
@@ -531,6 +535,9 @@ def run():
     if job_payload and not isinstance(job_payload, dict):
         return error('The action did not receive a dictionary as an argument')
 
+    if not proactive_scheduler.running:
+        proactive_scheduler.start()
+
     try:
         runtime_name = job_payload['runtime_name']
         verify_runtime_name(runtime_name)
@@ -644,6 +651,7 @@ def get_metadata():
 def main():
     global redis_client
     global budget_keeper
+    global proactive_scheduler
     global master_ip
 
     os.makedirs(LITHOPS_TEMP_DIR, exist_ok=True)
@@ -654,6 +662,10 @@ def main():
     with open(SA_MASTER_DATA_FILE, 'r') as ad:
         master_data = json.load(ad)
         master_ip = master_data['private_ip']
+
+    profiling = standalone_config['profiling']
+    if standalone_config['exec_mode'] == StandaloneMode.PROFILED.value:
+        proactive_scheduler = ProactiveScheduler(standalone_config, profiling)
 
     budget_keeper = BudgetKeeper(standalone_config, master_data, stop_callback=clean)
     budget_keeper.start()

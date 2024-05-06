@@ -18,6 +18,7 @@ class StandaloneMode(Enum):
     CONSUME = "consume"
     CREATE = "create"
     REUSE = "reuse"
+    PROFILED = "profiled"
 
 
 class WorkerStatus(Enum):
@@ -42,6 +43,10 @@ class JobStatus(Enum):
 class LithopsValidationError(Exception):
     pass
 
+
+VM_MEMORY_GB_DICT = {
+    'c5.xlarge': 4
+}
 
 MASTER_SERVICE_NAME = 'lithops-master.service'
 MASTER_SERVICE_FILE = f"""

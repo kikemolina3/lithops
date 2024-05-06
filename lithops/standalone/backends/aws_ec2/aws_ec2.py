@@ -543,7 +543,7 @@ class AWSEC2Backend:
             self.config['master_name'] = self.ec2_data['master_name']
             self._create_master_instance()
 
-        elif self.mode in [StandaloneMode.CREATE.value, StandaloneMode.REUSE.value]:
+        elif self.mode in [StandaloneMode.CREATE.value, StandaloneMode.REUSE.value, StandaloneMode.PROFILED.value]:
 
             # Create the VPC if not exists
             self._create_vpc()
