@@ -1,5 +1,6 @@
 import os
 import json
+import requests
 from enum import Enum
 
 from lithops.constants import (
@@ -12,6 +13,19 @@ from lithops.constants import (
     SA_WORKER_LOG_FILE,
     SA_SETUP_DONE_FILE
 )
+
+
+def is_worker_free(worker_private_ip):
+    """
+    Checks if the Lithops service is ready and free in the worker VM instance
+    """
+    url = f"http://{worker_private_ip}:{SA_WORKER_SERVICE_PORT}/ping"
+    try:
+        r = requests.get(url, timeout=0.5)
+        resp = r.json()
+        return True if resp.get('free', 0) > 0 else False
+    except Exception:
+        return False
 
 
 class StandaloneMode(Enum):
@@ -45,7 +59,7 @@ class LithopsValidationError(Exception):
 
 
 VM_MEMORY_GB_DICT = {
-    'c5.xlarge': 4
+    'c5.large': 4
 }
 
 MASTER_SERVICE_NAME = 'lithops-master.service'

@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-
+import hashlib
 import os
 import re
 import time
@@ -26,13 +26,13 @@ from botocore.exceptions import ClientError
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 
+import concurrent.futures as cf
 from lithops.version import __version__
 from lithops.util.ssh_client import SSHClient
 from lithops.constants import COMPUTE_CLI_MSG, CACHE_DIR
 from lithops.config import load_yaml_config, dump_yaml_config
 from lithops.standalone.utils import CLOUD_CONFIG_WORKER, CLOUD_CONFIG_WORKER_PK, StandaloneMode, get_host_setup_script
 from lithops.standalone import LithopsValidationError
-
 
 logger = logging.getLogger(__name__)
 
@@ -370,21 +370,21 @@ class AWSEC2Backend:
                 GroupId=response['GroupId'],
                 IpPermissions=[
                     {'IpProtocol': 'tcp',
-                        'FromPort': 8080,
-                        'ToPort': 8080,
-                        'IpRanges': [{'CidrIp': '10.0.0.0/16'}]},
+                     'FromPort': 8080,
+                     'ToPort': 8080,
+                     'IpRanges': [{'CidrIp': '10.0.0.0/16'}]},
                     {'IpProtocol': 'tcp',
-                        'FromPort': 8081,
-                        'ToPort': 8081,
-                        'IpRanges': [{'CidrIp': '10.0.0.0/16'}]},
+                     'FromPort': 8081,
+                     'ToPort': 8081,
+                     'IpRanges': [{'CidrIp': '10.0.0.0/16'}]},
                     {'IpProtocol': 'tcp',
-                        'FromPort': 6379,
-                        'ToPort': 6379,
-                        'IpRanges': [{'CidrIp': '10.0.0.0/16'}]},
+                     'FromPort': 6379,
+                     'ToPort': 6379,
+                     'IpRanges': [{'CidrIp': '10.0.0.0/16'}]},
                     {'IpProtocol': 'tcp',
-                        'FromPort': 22,
-                        'ToPort': 22,
-                        'IpRanges': [{'CidrIp': '0.0.0.0/0'}]}
+                     'FromPort': 22,
+                     'ToPort': 22,
+                     'IpRanges': [{'CidrIp': '0.0.0.0/0'}]}
                 ]
             )
 
@@ -560,7 +560,7 @@ class AWSEC2Backend:
             # Create the Subnet if not exists
             self._create_subnets()
             # Create the internet gateway if not exists
-            self. _create_internet_gateway()
+            self._create_internet_gateway()
             # Create the NAT gateway
             # self._create_nat_gateway()
             # Create routing tables
@@ -647,7 +647,8 @@ class AWSEC2Backend:
         script = get_host_setup_script()
         build_vm.get_ssh_client().upload_data_to_file(script, remote_script)
         logger.debug("Executing Lithops installation script. Be patient, this process can take up to 3 minutes")
-        build_vm.get_ssh_client().run_remote_command(f"chmod 777 {remote_script}; sudo {remote_script}; rm {remote_script};")
+        build_vm.get_ssh_client().run_remote_command(
+            f"chmod 777 {remote_script}; sudo {remote_script}; rm {remote_script};")
         logger.debug("Lithops installation script finsihed")
 
         for src_dst_file in include:
@@ -662,7 +663,8 @@ class AWSEC2Backend:
             remote_script = "/tmp/install_user_lithops.sh"
             build_vm.get_ssh_client().upload_local_file(script, remote_script)
             logger.debug(f"Executing user script '{script_file}'")
-            build_vm.get_ssh_client().run_remote_command(f"chmod 777 {remote_script}; sudo {remote_script}; rm {remote_script};")
+            build_vm.get_ssh_client().run_remote_command(
+                f"chmod 777 {remote_script}; sudo {remote_script}; rm {remote_script};")
             logger.debug(f"User script '{script_file}' finsihed")
 
         build_vm_id = build_vm.get_instance_id()
@@ -699,6 +701,7 @@ class AWSEC2Backend:
         """
         Deletes a VM Image
         """
+
         def list_images():
             return self.ec2_client.describe_images(Filters=[
                 {
@@ -756,7 +759,7 @@ class AWSEC2Backend:
         for res in response['Reservations']:
             for ins in res['Instances']:
                 if ins['State']['Name'] != 'terminated' and 'Tags' in ins \
-                   and 'VpcId' in ins and self.ec2_data['vpc_id'] == ins['VpcId']:
+                        and 'VpcId' in ins and self.ec2_data['vpc_id'] == ins['VpcId']:
                     for tag in ins['Tags']:
                         if tag['Key'] == 'Name' and tag['Value'].startswith(vms_prefixes):
                             ins_to_delete.append(ins['InstanceId'])
@@ -807,7 +810,7 @@ class AWSEC2Backend:
             total_correct += 1
         except ClientError as e:
             if e.response['ResponseMetadata']['HTTPStatusCode'] == 400 and \
-               'does not exist' in e.response['Error']['Message']:
+                    'does not exist' in e.response['Error']['Message']:
                 total_correct += 1
             logger.debug(e.response['Error']['Message'])
 
@@ -835,7 +838,7 @@ class AWSEC2Backend:
             total_correct += 1
         except ClientError as e:
             if e.response['ResponseMetadata']['HTTPStatusCode'] == 400 and \
-               'does not exist' in e.response['Error']['Message']:
+                    'does not exist' in e.response['Error']['Message']:
                 total_correct += 1
             logger.debug(e.response['Error']['Message'])
         # try:
@@ -857,7 +860,7 @@ class AWSEC2Backend:
             total_correct += 1
         except ClientError as e:
             if e.response['ResponseMetadata']['HTTPStatusCode'] == 400 and \
-               'does not exist' in e.response['Error']['Message']:
+                    'does not exist' in e.response['Error']['Message']:
                 total_correct += 1
             logger.debug(e.response['Error']['Message'])
         try:
@@ -868,7 +871,7 @@ class AWSEC2Backend:
             total_correct += 1
         except ClientError as e:
             if e.response['ResponseMetadata']['HTTPStatusCode'] == 400 and \
-               'does not exist' in e.response['Error']['Message']:
+                    'does not exist' in e.response['Error']['Message']:
                 total_correct += 1
             logger.debug(e.response['Error']['Message'])
 
@@ -879,7 +882,7 @@ class AWSEC2Backend:
             total_correct += 1
         except ClientError as e:
             if e.response['ResponseMetadata']['HTTPStatusCode'] == 400 and \
-               'does not exist' in e.response['Error']['Message']:
+                    'does not exist' in e.response['Error']['Message']:
                 total_correct += 1
             logger.debug(e.response['Error']['Message'])
 
@@ -983,7 +986,10 @@ class AWSEC2Backend:
 
         user = worker.ssh_credentials['username']
 
-        pub_key = f'{self.cache_dir}/{self.master.name}-id_rsa.pub'
+        if self.mode == StandaloneMode.PROFILED.value:
+            pub_key = os.path.expanduser('~/.ssh/lithops_id_rsa.pub')
+        else:
+            pub_key = f'{self.cache_dir}/{self.master.name}-id_rsa.pub'
         if os.path.isfile(pub_key):
             with open(pub_key, 'r') as pk:
                 pk_data = pk.read().strip()
@@ -998,6 +1004,28 @@ class AWSEC2Backend:
 
         worker.create(user_data=user_data)
         self.workers.append(worker)
+
+    def create_workers(self, workers_to_create, worker_id_base):
+        current_workers_old = set(self.workers)
+        futures = []
+        with cf.ThreadPoolExecutor(min(workers_to_create, 48)) as ex:
+            for vm_n in range(workers_to_create):
+                worker_id = f'{worker_id_base}-{vm_n}'
+                worker_hash = hashlib.sha1(worker_id.encode("utf-8")).hexdigest()[:8]
+                name = f'lithops-worker-{worker_hash}'
+                futures.append(ex.submit(self.create_worker, name))
+
+        for future in cf.as_completed(futures):
+            try:
+                future.result()
+            except Exception as e:
+                logger.exception(e)
+
+        current_workers_new = set(self.workers)
+        new_workers = current_workers_new - current_workers_old
+        logger.debug(f"Total worker VM instances created: {len(new_workers)}/{workers_to_create}")
+
+        return list(new_workers)
 
     def get_runtime_key(self, runtime_name, version=__version__):
         """
@@ -1097,7 +1125,7 @@ class EC2Instance:
         Checks if the VM instance is ready to receive ssh connections
         """
         login_type = 'password' if 'password' in self.ssh_credentials and \
-            not self.public else 'publickey'
+                                   not self.public else 'publickey'
         try:
             self.get_ssh_client().run_remote_command('id')
         except LithopsValidationError as err:
@@ -1231,8 +1259,10 @@ class EC2Instance:
 
             LaunchSpecification['MinCount'] = 1
             LaunchSpecification['MaxCount'] = 1
-            LaunchSpecification["TagSpecifications"] = [{"ResourceType": "instance", "Tags": [{'Key': 'Name', 'Value': self.name}]}]
-            LaunchSpecification["InstanceInitiatedShutdownBehavior"] = 'terminate' if self.delete_on_dismantle else 'stop'
+            LaunchSpecification["TagSpecifications"] = [
+                {"ResourceType": "instance", "Tags": [{'Key': 'Name', 'Value': self.name}]}]
+            LaunchSpecification[
+                "InstanceInitiatedShutdownBehavior"] = 'terminate' if self.delete_on_dismantle else 'stop'
 
             if user_data:
                 LaunchSpecification['UserData'] = user_data

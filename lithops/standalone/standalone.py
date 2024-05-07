@@ -59,10 +59,7 @@ class StandaloneHandler:
         self.start_timeout = self.config['start_timeout']
         self.exec_mode = StandaloneMode[self.config['exec_mode'].upper()]
         self.is_lithops_worker = is_lithops_worker()
-
         self.profiling = self.config['profiling']
-        if self.profiling:
-            self.exec_mode = StandaloneMode.PROFILED
 
         module_location = f'lithops.standalone.backends.{self.backend_name}'
         sb_module = importlib.import_module(module_location)
@@ -203,6 +200,7 @@ class StandaloneHandler:
         try:
             payload = {
                 'worker_instance_type': worker_instance_type,
+                'worker_instance_type': worker_instance_type,
                 'worker_processes': worker_processes,
                 'runtime_name': runtime_name
             }
@@ -218,6 +216,9 @@ class StandaloneHandler:
         executor_id = job_payload['executor_id']
         job_id = job_payload['job_id']
         total_calls = job_payload['total_calls']
+
+        required_workers = 0
+        total_workers = 0
 
         if self.exec_mode == StandaloneMode.CONSUME:
             logger.debug(
@@ -243,28 +244,6 @@ class StandaloneHandler:
                 f'processes: {job_payload["worker_processes"]} - Required Workers: {required_workers}'
             )
 
-        def create_workers(workers_to_create):
-            current_workers_old = set(self.backend.workers)
-            futures = []
-            with cf.ThreadPoolExecutor(min(workers_to_create, 48)) as ex:
-                for vm_n in range(workers_to_create):
-                    worker_id = f"{executor_id}-{job_id}-{vm_n}"
-                    worker_hash = hashlib.sha1(worker_id.encode("utf-8")).hexdigest()[:8]
-                    name = f'lithops-worker-{worker_hash}'
-                    futures.append(ex.submit(self.backend.create_worker, name))
-
-            for future in cf.as_completed(futures):
-                try:
-                    future.result()
-                except Exception:
-                    pass
-
-            current_workers_new = set(self.backend.workers)
-            new_workers = current_workers_new - current_workers_old
-            logger.debug(f"Total worker VM instances created: {len(new_workers)}/{workers_to_create}")
-
-            return list(new_workers)
-
         new_workers = []
 
         if self.exec_mode == StandaloneMode.CONSUME:
@@ -272,7 +251,7 @@ class StandaloneHandler:
             total_workers = 1
 
         elif self.exec_mode == StandaloneMode.CREATE:
-            new_workers = create_workers(required_workers)
+            new_workers = self.backend.create_workers(required_workers, f"{executor_id}-{job_id}")
             total_workers = len(new_workers)
 
         elif self.exec_mode == StandaloneMode.REUSE:
@@ -287,7 +266,7 @@ class StandaloneHandler:
                 # create missing delta of workers
                 workers_to_create = required_workers - total_workers
                 logger.debug(f'Going to create {workers_to_create} new workers')
-                new_workers = create_workers(workers_to_create)
+                new_workers = self.backend.create_workers(workers_to_create, f"{executor_id}-{job_id}")
                 total_workers += len(new_workers)
 
         # NOTE-SCHEDULING: VMs are managed by master VM in profiled mode

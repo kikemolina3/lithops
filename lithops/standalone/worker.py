@@ -75,7 +75,8 @@ def ping():
 @app.route('/ttd', methods=['GET'])
 def ttd():
     if budget_keeper:
-        ttd = budget_keeper.get_time_to_dismantle()
+        # ttd = budget_keeper.get_time_to_dismantle()
+        ttd = 300
     else:
         ttd = "Disabled"
     return str(ttd), 200
@@ -162,7 +163,7 @@ def redis_queue_consumer(pid, work_queue_name, exec_mode, backend):
                        for worker in worker_threads.values()):
                     break
                 continue
-        elif exec_mode == StandaloneMode.REUSE.value:
+        elif exec_mode in [StandaloneMode.REUSE.value, StandaloneMode.PROFILED.value]:
             key, task_payload_str = redis_client.brpop(work_queue_name)
         else:
             task_payload_str = redis_client.rpop(work_queue_name)
@@ -184,8 +185,8 @@ def redis_queue_consumer(pid, work_queue_name, exec_mode, backend):
                          f'CallID {call_id} in the local worker (consumer {pid})')
             notify_task_start(job_key, call_id)
 
-            if budget_keeper:
-                budget_keeper.add_job(job_key_call_id)
+            # if budget_keeper:
+            #     budget_keeper.add_job(job_key_call_id)
 
             task_filename = os.path.join(JOBS_DIR, f'{job_key_call_id}.task')
 
@@ -221,7 +222,7 @@ def redis_queue_consumer(pid, work_queue_name, exec_mode, backend):
 
 def run_worker():
     global redis_client
-    global budget_keeper
+    # global budget_keeper
     global worker_threads
 
     os.makedirs(LITHOPS_TEMP_DIR, exist_ok=True)
@@ -246,8 +247,8 @@ def run_worker():
     if worker_data['master_ip'] != worker_data['private_ip']:
         stop_callback = partial(notify_worker_stop, worker_data['name'])
         delete_callback = partial(notify_worker_delete, worker_data['name'])
-        budget_keeper = BudgetKeeper(standalone_config, worker_data, stop_callback, delete_callback)
-        budget_keeper.start()
+        # budget_keeper = BudgetKeeper(standalone_config, worker_data, stop_callback, delete_callback)
+        # budget_keeper.start()
 
     # Start the http server. This will be used by the master VM to pìng this
     # worker and for canceling tasks
@@ -288,12 +289,12 @@ def run_worker():
     # run until there are no more tasks in the queue.
     logger.debug('Worker service finished')
 
-    try:
-        # Try to stop the current worker VM once no more pending tasks to run
-        # in case of create mode
-        budget_keeper.stop_instance()
-    except Exception:
-        pass
+    # try:
+    #     # Try to stop the current worker VM once no more pending tasks to run
+    #     # in case of create mode
+    #     budget_keeper.stop_instance()
+    # except Exception:
+    #     pass
 
 
 if __name__ == '__main__':
