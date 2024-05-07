@@ -14,9 +14,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-
+import math
 import os
 import copy
+import threading
 import time
 import json
 import uuid
@@ -31,7 +32,6 @@ from gevent.pywsgi import WSGIServer
 from threading import Thread
 from concurrent.futures import ThreadPoolExecutor
 
-from lithops.standalone.scheduler import ProactiveScheduler
 from lithops.version import __version__
 from lithops.localhost import LocalhostHandler
 from lithops.standalone import LithopsValidationError
@@ -58,7 +58,7 @@ from lithops.standalone.utils import (
     StandaloneMode,
     WorkerStatus,
     get_host_setup_script,
-    get_worker_setup_script
+    get_worker_setup_script, VM_MEMORY_GB_DICT, is_worker_free
 )
 
 os.makedirs(LITHOPS_TEMP_DIR, exist_ok=True)
@@ -77,25 +77,102 @@ JOB_MONITOR_CHECK_INTERVAL = 1
 redis_client = None
 budget_keeper = None
 master_ip = None
-proactive_scheduler: ProactiveScheduler | None = None
+proactive_scheduler = None
 
 
 # /---------------------------------------------------------------------------/
 # Workers
 # /---------------------------------------------------------------------------/
 
-def is_worker_free(worker_private_ip):
-    """
-    Checks if the Lithops service is ready and free in the worker VM instance
-    """
-    url = f"http://{worker_private_ip}:{SA_WORKER_SERVICE_PORT}/ping"
-    try:
-        r = requests.get(url, timeout=0.5)
-        resp = r.json()
-        logger.debug(f'Worker processes status from {worker_private_ip}: {resp}')
-        return True if resp.get('free', 0) > 0 else False
-    except Exception:
-        return False
+class ProactiveScheduler(threading.Thread):
+    def __init__(self, standalone_handler, profiling):
+        threading.Thread.__init__(self)
+
+        self.standalone_config = standalone_handler.config
+        self.exec_mode = self.standalone_config['exec_mode']
+        self.running = False
+
+        self.standalone_handler = standalone_handler
+        self.backend = self.standalone_handler.backend
+        self.instance_type = self.backend.get_worker_instance_type()
+        self.profiling = profiling
+        self.current_offset = 0
+
+        logger.info(f"Initiating ProactiveScheduler class")
+
+    def run(self):
+        self.running = True
+        logger.info(f"Running ProactiveScheduler monitor")
+        zero_tstamp = time.time()
+        stages_to_create = set(stage['step'] for stage in self.profiling
+                               if 'init_size' in stage and stage['init_size'] != 0)
+        stages_to_kill = set(stage['step'] for stage in self.profiling
+                             if 'kill_size' in stage and stage['kill_size'] != 0)
+
+        try:
+            while True:
+                self.current_offset = time.time() - zero_tstamp
+                # NOTE-SCHEDULING: create VMs when the time comes
+                for index in stages_to_create.copy():
+                    stage = self.profiling[index]
+                    if 'init_size' in stage and stage['init_size'] != 0 and self.current_offset >= stage[
+                        'vm_init_offset']:
+                        self.create_instances(stage)
+                        stages_to_create.remove(index)
+                # NOTE-SCHEDULING: kill VMs when the time comes
+                for index in stages_to_kill.copy():
+                    stage = self.profiling[index]
+                    if ('kill_size' in stage and stage['kill_size'] != 0 and
+                            self.current_offset >= stage['fn_init_offset'] + stage['duration']):
+                        # Check if functions over VMs finished and if so, kill VMs
+                        Thread(target=self.stop_instances, args=(stage,)).start()
+                        stages_to_kill.remove(index)
+                # Relax the CPU
+                time.sleep(1)
+        except Exception as e:
+            logger.exception(e)
+            logger.error("ProactiveScheduler monitor stopped due to an exception")
+
+    def stop_instances(self, stage):
+        number_of_instances = math.ceil(stage['kill_size'] // VM_MEMORY_GB_DICT[self.instance_type])
+        killed_instances = 0
+        logger.info(f"Killing {number_of_instances} VMs ({self.instance_type}) for stage {stage['step']}")
+        while killed_instances < number_of_instances:
+            logger.info("Killed instances: {killed_instances}")
+            logger.info(f"Alive instances: {len(self.backend.workers)}")
+            for instance in self.backend.workers.copy():
+                free = is_worker_free(instance.get_private_ip())
+                logger.info(f"Instance {instance.name} ({instance.get_private_ip()}) is free: {free}")
+                if free:
+                    self.backend.workers.remove(instance)
+                    instance.delete()
+                    killed_instances += 1
+                    logger.debug(f"Killed instance {instance.name} ({instance.private_ip})")
+            time.sleep(1)
+
+        logger.debug(f"Killed {killed_instances} VMs for stage {stage['step']} in second {int(self.current_offset)}")
+
+    def create_instances(self, stage):
+        number_of_instances = math.ceil(stage['init_size'] // VM_MEMORY_GB_DICT[self.instance_type])
+        logger.debug(
+            f"Creating {number_of_instances} VMs ({self.instance_type}) "
+            f"for stage {stage['step']} in second {int(self.current_offset)}")
+
+        new_workers = self.backend.create_workers(number_of_instances, f"{stage['step']}")
+        worker_instances = [
+            {'name': inst.name,
+             'private_ip': inst.private_ip,
+             'instance_id': inst.instance_id,
+             'ssh_credentials': inst.ssh_credentials}
+            for inst in new_workers
+        ]
+        # Initialize the workers
+        work_queue_name = (f'wq:{self.backend.get_worker_instance_type()}-'
+                           f'{self.standalone_config[self.standalone_handler.backend_name]["worker_processes"]}')
+        Thread(target=handle_workers, args=(worker_instances, work_queue_name)).start()
+
+    def eviction_handler(self):
+        pass
 
 
 def get_worker_ttd(worker_private_ip):
@@ -174,8 +251,8 @@ def get_workers():
     for worker in workers:
         worker_data = redis_client.hgetall(worker)
         if worker_data['instance_type'] == worker_instance_type \
-           and worker_data['runtime'] == runtime_name \
-           and int(worker_data['worker_processes']) == int(worker_processes):
+                and worker_data['runtime'] == runtime_name \
+                and int(worker_data['worker_processes']) == int(worker_processes):
             active_workers.append(worker_data)
 
     worker_type = f'{worker_instance_type}-{worker_processes}-{runtime_name}'
@@ -214,6 +291,8 @@ def save_worker(worker, standalone_config, work_queue_name):
     """
     config = copy.deepcopy(standalone_config)
     del config[config['backend']]
+    if 'profiling' in config:
+        del config['profiling']
     config = {key: str(value) if isinstance(value, bool) else value for key, value in config.items()}
 
     worker_processes = CPU_COUNT if worker.config['worker_processes'] == 'AUTO' \
@@ -235,7 +314,7 @@ def save_worker(worker, standalone_config, work_queue_name):
     })
 
 
-def setup_worker_create_reuse(standalone_handler, worker_info, work_queue_name):
+def setup_worker_create_reuse(worker_info, work_queue_name):
     """
     Run the worker setup process and installs all the Lithops dependencies into it
     """
@@ -327,7 +406,7 @@ def setup_worker_create_reuse(standalone_handler, worker_info, work_queue_name):
         raise e
 
 
-def setup_worker_consume(standalone_handler, worker_info, work_queue_name):
+def setup_worker_consume(worker_info, work_queue_name):
     """
     Run the worker setup process in the case of Consume mode
     """
@@ -367,7 +446,7 @@ def setup_worker_consume(standalone_handler, worker_info, work_queue_name):
         raise e
 
 
-def handle_workers(job_payload, workers, work_queue_name):
+def handle_workers(workers, work_queue_name):
     """
     Creates the workers (if any)
     """
@@ -376,16 +455,12 @@ def handle_workers(job_payload, workers, work_queue_name):
 
     logger.debug(f"Going to setup {len(workers)} workers")
 
-    standalone_config = extract_standalone_config(job_payload['config'])
-    standalone_handler = StandaloneHandler(standalone_config)
-
     futures = []
     total_correct = 0
 
-    if standalone_config['exec_mode'] == StandaloneMode.CONSUME.value:
+    if standalone_handler.exec_mode == StandaloneMode.CONSUME:
         try:
             setup_worker_consume(
-                standalone_handler,
                 workers[0],
                 work_queue_name
             )
@@ -397,7 +472,6 @@ def handle_workers(job_payload, workers, work_queue_name):
             for worker_info in workers:
                 future = executor.submit(
                     setup_worker_create_reuse,
-                    standalone_handler,
                     worker_info,
                     work_queue_name
                 )
@@ -408,7 +482,7 @@ def handle_workers(job_payload, workers, work_queue_name):
                 future.result()
                 total_correct += 1
             except Exception as e:
-                logger.error(e)
+                logger.exception(e)
 
     logger.debug(
         f'{total_correct} of {len(workers)} workers started '
@@ -462,7 +536,7 @@ def stop():
     job_key_list = flask.request.get_json(force=True, silent=True)
     # Start a separate thread to do the task in background,
     # for not keeping the client waiting.
-    Thread(target=cancel_job_process, args=(job_key_list, )).start()
+    Thread(target=cancel_job_process, args=(job_key_list,)).start()
 
     return ('', 204)
 
@@ -531,45 +605,52 @@ def run():
     """
     Entry point for running jobs
     """
-    job_payload = flask.request.get_json(force=True, silent=True)
-    if job_payload and not isinstance(job_payload, dict):
-        return error('The action did not receive a dictionary as an argument')
-
-    if not proactive_scheduler.running:
-        proactive_scheduler.start()
-
     try:
-        runtime_name = job_payload['runtime_name']
-        verify_runtime_name(runtime_name)
-    except Exception as e:
-        return error(str(e))
+        job_payload = flask.request.get_json(force=True, silent=True)
+        if job_payload and not isinstance(job_payload, dict):
+            return error('The action did not receive a dictionary as an argument')
 
-    job_key = job_payload['job_key']
-    logger.debug(f'Received job {job_key}')
+        if not proactive_scheduler.running:
+            proactive_scheduler.start()
 
-    budget_keeper.add_job(job_key)
+        try:
+            runtime_name = job_payload['runtime_name']
+            verify_runtime_name(runtime_name)
+        except Exception as e:
+            return error(str(e))
 
-    exec_mode = job_payload['config']['standalone']['exec_mode']
-    exec_mode = StandaloneMode[exec_mode.upper()]
-    workers = job_payload.pop('worker_instances')
+        job_key = job_payload['job_key']
+        logger.debug(f'Received job {job_key}')
 
-    if exec_mode == StandaloneMode.CONSUME:
-        queue_name = f'wq:localhost:{runtime_name.replace("/", "-")}'.lower()
-    elif exec_mode == StandaloneMode.CREATE:
-        queue_name = f'wq:{job_key}'.lower()
-    elif exec_mode == StandaloneMode.REUSE:
+        budget_keeper.add_job(job_key)
+
+        exec_mode = job_payload['config']['standalone']['exec_mode']
+        exec_mode = StandaloneMode[exec_mode.upper()]
+        workers = job_payload.pop('worker_instances')
         worker_it = job_payload['worker_instance_type']
         worker_wp = job_payload['worker_processes']
-        queue_name = f'wq:{worker_it}-{worker_wp}-{runtime_name.replace("/", "-")}'.lower()
 
-    Thread(target=handle_job, args=(job_payload, queue_name)).start()
-    Thread(target=handle_workers, args=(job_payload, workers, queue_name)).start()
+        if exec_mode == StandaloneMode.CONSUME:
+            queue_name = f'wq:localhost:{runtime_name.replace("/", "-")}'.lower()
+        elif exec_mode == StandaloneMode.CREATE:
+            queue_name = f'wq:{job_key}'.lower()
+        elif exec_mode == StandaloneMode.REUSE:
+            queue_name = f'wq:{worker_it}-{worker_wp}-{runtime_name.replace("/", "-")}'.lower()
+        elif exec_mode == StandaloneMode.PROFILED:
+            queue_name = f'wq:{worker_it}-{worker_wp}'
 
-    act_id = str(uuid.uuid4()).replace('-', '')[:12]
-    response = flask.jsonify({'activationId': act_id})
-    response.status_code = 202
+        Thread(target=handle_job, args=(job_payload, queue_name)).start()
+        if exec_mode != StandaloneMode.PROFILED:
+            Thread(target=handle_workers, args=(workers, queue_name)).start()
 
-    return response
+        act_id = str(uuid.uuid4()).replace('-', '')[:12]
+        response = flask.jsonify({'activationId': act_id})
+        response.status_code = 202
+
+        return response
+    except Exception as e:
+        logger.exception(e)
+        return error(str(e))
 
 
 def job_monitor():
@@ -651,6 +732,7 @@ def get_metadata():
 def main():
     global redis_client
     global budget_keeper
+    global standalone_handler
     global proactive_scheduler
     global master_ip
 
@@ -663,9 +745,12 @@ def main():
         master_data = json.load(ad)
         master_ip = master_data['private_ip']
 
+    standalone_handler = StandaloneHandler(standalone_config)
+    standalone_handler.init()
+
     profiling = standalone_config['profiling']
-    if standalone_config['exec_mode'] == StandaloneMode.PROFILED.value:
-        proactive_scheduler = ProactiveScheduler(standalone_config, profiling)
+    if standalone_handler.exec_mode == StandaloneMode.PROFILED:
+        proactive_scheduler = ProactiveScheduler(standalone_handler, profiling)
 
     budget_keeper = BudgetKeeper(standalone_config, master_data, stop_callback=clean)
     budget_keeper.start()

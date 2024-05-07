@@ -16,7 +16,7 @@ if __name__ == "__main__":
     fexec = lithops.FunctionExecutor(profiling=hello_profiling)
     for step in hello_profiling:
         num_fn = step["exec_size"] // 2
-        params = [(i, step["duration"]) for i in range(int(num_fn))]
+        params = [step["duration"] for i in range(int(num_fn))]
         result = fexec.map(my_map_function, params).get_result()
         print(result)
     fexec.plot(dst='.')

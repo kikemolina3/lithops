@@ -7,7 +7,8 @@ hello_profiling = [
         'init_size': 4.0,
         'vm_init_offset': 0,
         'fn_init_offset': 60,
-        'kill_size': 0},
+        'kill_size': 0
+    },
     {
         'service': 'spot',
         'exec_size': 20.0,
@@ -26,5 +27,18 @@ hello_profiling = [
         'fn_init_offset': 280,
         'init_size': 0,
         'vm_init_offset': None
+    }
+]
+
+first_profiling = [
+    {
+        'service': 'spot',
+        'exec_size': 4.0,
+        'duration': 100,
+        'step': 0,
+        'init_size': 4.0,
+        'vm_init_offset': 0,
+        'fn_init_offset': 60,
+        'kill_size': 0
     }
 ]
