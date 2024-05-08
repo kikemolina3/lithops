@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-
+import hashlib
 import os
 import time
 import json
@@ -26,6 +26,8 @@ import subprocess as sp
 from pathlib import Path
 from threading import Thread
 from functools import partial
+
+import requests
 from gevent.pywsgi import WSGIServer
 from concurrent.futures import ThreadPoolExecutor
 
@@ -60,7 +62,42 @@ budget_keeper = None
 
 job_processes = {}
 worker_threads = {}
+call_ids = []
 canceled = []
+
+
+def is_evicted():
+    response = requests.get("http://169.254.169.254/latest/meta-data/spot/instance-action")
+    return response.status_code == 200
+
+
+def get_zero_worker_name():
+    worker_id = '0-0'
+    worker_hash = hashlib.sha1(worker_id.encode("utf-8")).hexdigest()[:8]
+    name = f'lithops-worker-{worker_hash}'
+    return name
+
+
+class EvictionMonitor(Thread):
+    def __init__(self, worker_name):
+        super().__init__()
+        self.worker_name = worker_name
+        self.eviction_counter = 0
+        self.notified = False
+        logger.info(f"Starting eviction monitor for worker {self.worker_name}")
+
+    def run(self):
+        while self.notified is False:
+            # if is_evicted():
+            # TODO-SCHEDULING: Un-hardcode this
+            if self.eviction_counter >= 20 and self.worker_name == get_zero_worker_name():
+                logger.info(f"Instance eviction detected. Stopping worker {self.worker_name}")
+                notify_worker_evicted(self.worker_name)
+                self.notified = True
+            # Relax the CPU
+            self.eviction_counter += 1
+            time.sleep(2)
+        logger.info(f"Eviction monitor for worker {self.worker_name} finished")
 
 
 @app.route('/ping', methods=['GET'])
@@ -126,6 +163,19 @@ def notify_worker_stop(worker_name):
 def notify_worker_delete(worker_name):
     try:
         redis_client.delete(f"worker:{worker_name}")
+    except Exception as e:
+        logger.error(e)
+
+
+def notify_worker_evicted(worker_name):
+    try:
+        message_dict = {
+            'worker_name': worker_name,
+            'call_ids': call_ids
+        }
+        message = json.dumps(message_dict)
+        redis_client.publish('eviction', message)
+        logger.info(f"Publishing eviction message: {message}")
     except Exception as e:
         logger.error(e)
 
@@ -197,7 +247,9 @@ def redis_queue_consumer(pid, work_queue_name, exec_mode, backend):
             log = open(RN_LOG_FILE, 'a')
             process = sp.Popen(cmd, stdout=log, stderr=log, start_new_session=True)
             job_processes[job_key_call_id] = process
+            call_ids.append(call_id)
             process.communicate()  # blocks until the process finishes
+            call_ids.remove(call_id)
             del job_processes[job_key_call_id]
 
             if os.path.exists(task_filename):
@@ -239,6 +291,10 @@ def run_worker():
     # Start the redis client
     redis_client = redis.Redis(host=worker_data['master_ip'], decode_responses=True)
 
+    if standalone_config['exec_mode'] == StandaloneMode.PROFILED.value:
+        eviction_monitor = EvictionMonitor(worker_data['name'])
+        eviction_monitor.start()
+
     # Set the worker as Active
     notify_worker_active(worker_data['name'])
 
@@ -256,6 +312,7 @@ def run_worker():
         ip_address = "0.0.0.0" if os.getenv("DOCKER") == "Lithops" else worker_data['private_ip']
         server = WSGIServer((ip_address, SA_WORKER_SERVICE_PORT), app, log=app.logger)
         server.serve_forever()
+
     Thread(target=run_wsgi, daemon=True).start()
 
     # Start the consumer threads

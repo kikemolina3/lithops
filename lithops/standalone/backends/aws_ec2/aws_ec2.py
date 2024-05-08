@@ -1429,3 +1429,9 @@ class EC2Instance:
         Validate hardware/os requirments specified in backend config
         """
         pass
+
+    def check_eviction(self):
+        """
+        Check if the VM instance was evicted
+        """
+

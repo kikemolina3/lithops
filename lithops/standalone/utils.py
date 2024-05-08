@@ -44,6 +44,7 @@ class WorkerStatus(Enum):
     IDLE = "idle"
     BUSY = "busy"
     STOPPED = "stopped"
+    EVICTED = "evicted"
 
 
 class JobStatus(Enum):

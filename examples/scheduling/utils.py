@@ -33,10 +33,10 @@ hello_profiling = [
 first_profiling = [
     {
         'service': 'spot',
-        'exec_size': 4.0,
-        'duration': 100,
+        'exec_size': 8.0,
+        'duration': 300,
         'step': 0,
-        'init_size': 4.0,
+        'init_size': 8.0,
         'vm_init_offset': 0,
         'fn_init_offset': 60,
         'kill_size': 0

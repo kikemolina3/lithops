@@ -73,8 +73,11 @@ app = flask.Flask(__name__)
 
 MAX_INSTANCE_CREATE_RETRIES = 2
 JOB_MONITOR_CHECK_INTERVAL = 1
+EVICTION_TIME = 120
+EC2_INIT_TIME = 60
 
 redis_client = None
+pubsub = None
 budget_keeper = None
 master_ip = None
 proactive_scheduler = None
@@ -173,6 +176,88 @@ class ProactiveScheduler(threading.Thread):
 
     def eviction_handler(self):
         pass
+
+
+def get_stage_by_tstamp(profiling, tstamp):
+    for index, stage in enumerate(profiling):
+        if stage['fn_init_offset'] <= tstamp <= stage['fn_init_offset'] + stage['duration']:
+            return index
+    return None
+
+
+def my_startup_time(profiling, my_index):
+    total_time = 0
+    for i in range(my_index):
+        total_time += profiling[i]['duration']
+        if profiling[i]['exec_size'] == profiling[i]['init_size']:
+            total_time += EC2_INIT_TIME
+    return total_time
+
+
+class SpotMonitor(threading.Thread):
+    def __init__(self, standalone_handler, profiling):
+        threading.Thread.__init__(self)
+        self.standalone_handler = standalone_handler
+        self.backend = self.standalone_handler.backend
+        self.evictions = []
+        self.profiling = profiling
+        logger.info(f"Initiating SpotMonitor thread")
+
+    def run(self):
+        try:
+            pubsub.subscribe('eviction')
+            logger.info("Subscribed to eviction pubsub channel")
+            for message in pubsub.listen():
+                logger.info("Received eviction message")
+                if message['type'] == 'message':
+                    logger.info("Received eviction message is a 'message' type")
+                    message = json.loads(message['data'])
+                    logger.info(f"Received eviction message: {message}")
+                    worker_name = message['worker_name']
+                    call_ids = message['call_ids']
+                    self.replace_worker(worker_name)
+                    self.eviction_handler(call_ids, time.time())
+        except Exception as e:
+            logger.exception(e)
+            logger.error("SpotMonitor stopped due to an exception")
+
+    def eviction_handler(self, call_ids, tstamp):
+        self.evictions.append({'tstamp': tstamp})
+        stage_index = get_stage_by_tstamp(self.profiling, tstamp)
+        # check if stage is finishable or not
+        finishable = (self.profiling[stage_index]['fn_init_offset'] +
+                      self.profiling[stage_index]['duration'] <= tstamp + EVICTION_TIME)
+        if finishable:
+            offset = tstamp + EC2_INIT_TIME - self.profiling[stage_index + 1]['fn_init_offset']
+            for i in range(stage_index + 1, len(self.profiling)):
+                self.profiling[i]['fn_init_offset'] += offset
+                if 'vm_init_offset' in self.profiling[i] and self.profiling[i]['vm_init_offset'] is not None:
+                    self.profiling[i]['vm_init_offset'] += offset
+        else:
+            handle_job_after_eviction(call_ids)
+            offset = tstamp + EC2_INIT_TIME - self.profiling[stage_index + 1]['fn_init_offset'] + \
+                     self.profiling[stage_index]['duration']
+            # kill all vms on my stage
+            self.profiling[stage_index]['kill_size'] = self.profiling[stage_index]['exec_size']
+            # make that next stage init all vms again
+            self.profiling[stage_index + 1]['init_size'] = self.profiling[stage_index + 1]['exec_size']
+            if ('vm_init_offset' not in self.profiling[stage_index + 1] or
+                    self.profiling[stage_index + 1]['vm_init_offset'] is None):
+                self.profiling[stage_index + 1]['vm_init_offset'] = my_startup_time(self.profiling,
+                                                                                    stage_index + 1) - EC2_INIT_TIME
+            for i in range(stage_index + 1, len(self.profiling)):
+                self.profiling[i]['fn_init_offset'] += offset
+                if 'vm_init_offset' in self.profiling[i] and self.profiling[i]['vm_init_offset'] is not None:
+                    self.profiling[i]['vm_init_offset'] += offset
+        return self.profiling
+
+    def replace_worker(self, worker_name):
+        for w in self.backend.workers.copy():
+            if w.name == worker_name:
+                self.backend.workers.remove(w)
+                w.delete()
+                break
+        self.backend.create_worker(worker_name)
 
 
 def get_worker_ttd(worker_private_ip):
@@ -571,6 +656,16 @@ def list_jobs():
     return flask.jsonify(result)
 
 
+def handle_job_after_eviction(call_ids):
+    queue_name = f"wq:{latest_job_payload['worker_instance_type']}-{latest_job_payload['worker_processes']}"
+    for call_id in call_ids:
+        task_payload = copy.deepcopy(latest_job_payload)
+        task_payload['call_ids'] = [call_id]
+        task_payload['data_byte_ranges'] = [latest_job_payload['data_byte_ranges'][call_id]]
+        redis_client.lpush(queue_name, json.dumps(task_payload))
+        logging.info(f"Resubmitting task with call_id: {call_id}")
+
+
 def handle_job(job_payload, queue_name):
     """
     Process responsible to put the job in redis and all the
@@ -607,6 +702,7 @@ def run():
     """
     try:
         job_payload = flask.request.get_json(force=True, silent=True)
+        latest_job_payload = job_payload
         if job_payload and not isinstance(job_payload, dict):
             return error('The action did not receive a dictionary as an argument')
 
@@ -731,10 +827,13 @@ def get_metadata():
 
 def main():
     global redis_client
+    global pubsub
     global budget_keeper
     global standalone_handler
     global proactive_scheduler
+    global spot_monitor
     global master_ip
+    global latest_job_payload
 
     os.makedirs(LITHOPS_TEMP_DIR, exist_ok=True)
 
@@ -748,14 +847,17 @@ def main():
     standalone_handler = StandaloneHandler(standalone_config)
     standalone_handler.init()
 
+    redis_client = redis.Redis(decode_responses=True)
+    pubsub = redis_client.pubsub()
+
     profiling = standalone_config['profiling']
     if standalone_handler.exec_mode == StandaloneMode.PROFILED:
         proactive_scheduler = ProactiveScheduler(standalone_handler, profiling)
+        spot_monitor = SpotMonitor(standalone_handler, profiling)
+        spot_monitor.start()
 
     budget_keeper = BudgetKeeper(standalone_config, master_data, stop_callback=clean)
     budget_keeper.start()
-
-    redis_client = redis.Redis(decode_responses=True)
 
     Thread(target=job_monitor, daemon=True).start()
 
