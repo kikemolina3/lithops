@@ -1004,6 +1004,7 @@ class AWSEC2Backend:
 
         worker.create(user_data=user_data)
         self.workers.append(worker)
+        return worker
 
     def create_workers(self, workers_to_create, worker_id_base):
         current_workers_old = set(self.workers)

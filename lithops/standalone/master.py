@@ -32,6 +32,7 @@ from gevent.pywsgi import WSGIServer
 from threading import Thread
 from concurrent.futures import ThreadPoolExecutor
 
+from lithops.scheduler.utils import EC2_INIT_TIME, EVICTION_TIME
 from lithops.version import __version__
 from lithops.localhost import LocalhostHandler
 from lithops.standalone import LithopsValidationError
@@ -73,14 +74,13 @@ app = flask.Flask(__name__)
 
 MAX_INSTANCE_CREATE_RETRIES = 2
 JOB_MONITOR_CHECK_INTERVAL = 1
-EVICTION_TIME = 120
-EC2_INIT_TIME = 60
 
 redis_client = None
 pubsub = None
 budget_keeper = None
 master_ip = None
 proactive_scheduler = None
+latest_job_payload = None
 
 
 # /---------------------------------------------------------------------------/
@@ -99,22 +99,26 @@ class ProactiveScheduler(threading.Thread):
         self.backend = self.standalone_handler.backend
         self.instance_type = self.backend.get_worker_instance_type()
         self.profiling = profiling
+        self.evictions = []
         self.current_offset = 0
+        self.zero_tstamp = 0
 
         logger.info(f"Initiating ProactiveScheduler class")
 
     def run(self):
         self.running = True
         logger.info(f"Running ProactiveScheduler monitor")
-        zero_tstamp = time.time()
+        self.zero_tstamp = time.time()
         stages_to_create = set(stage['step'] for stage in self.profiling
                                if 'init_size' in stage and stage['init_size'] != 0)
         stages_to_kill = set(stage['step'] for stage in self.profiling
                              if 'kill_size' in stage and stage['kill_size'] != 0)
 
         try:
+            # NOTE-SCHEDULING: spawn a thread to monitor evictions
+            Thread(target=self.eviction_handler).start()
             while True:
-                self.current_offset = time.time() - zero_tstamp
+                self.current_offset = time.time() - self.zero_tstamp
                 # NOTE-SCHEDULING: create VMs when the time comes
                 for index in stages_to_create.copy():
                     stage = self.profiling[index]
@@ -155,6 +159,24 @@ class ProactiveScheduler(threading.Thread):
 
         logger.debug(f"Killed {killed_instances} VMs for stage {stage['step']} in second {int(self.current_offset)}")
 
+    def eviction_handler(self):
+        try:
+            pubsub.subscribe('eviction')
+            logger.info("Subscribed to eviction pubsub channel")
+            for message in pubsub.listen():
+                logger.info("Received eviction message")
+                if message['type'] == 'message':
+                    logger.info("Received eviction message is a 'message' type")
+                    message = json.loads(message['data'])
+                    logger.info(f"Received eviction message: {message}")
+                    worker_name = message['worker_name']
+                    call_ids = message['call_ids']
+                    self.replace_worker(worker_name)
+                    self.modify_profiling(call_ids, time.time())
+        except Exception as e:
+            logger.exception(e)
+            logger.error("SpotMonitor stopped due to an exception")
+
     def create_instances(self, stage):
         number_of_instances = math.ceil(stage['init_size'] // VM_MEMORY_GB_DICT[self.instance_type])
         logger.debug(
@@ -174,8 +196,56 @@ class ProactiveScheduler(threading.Thread):
                            f'{self.standalone_config[self.standalone_handler.backend_name]["worker_processes"]}')
         Thread(target=handle_workers, args=(worker_instances, work_queue_name)).start()
 
-    def eviction_handler(self):
-        pass
+    def modify_profiling(self, call_ids, tstamp):
+        self.evictions.append({'tstamp': tstamp})
+        eviction_offset = tstamp - self.zero_tstamp
+        stage_index = get_stage_by_tstamp(self.profiling, eviction_offset)
+        # check if stage is finishable or not
+        finishable = (self.profiling[stage_index]['fn_init_offset'] +
+                      self.profiling[stage_index]['duration'] <= eviction_offset + EVICTION_TIME)
+        if finishable:
+            if stage_index < len(self.profiling) - 1:
+                offset = eviction_offset + EC2_INIT_TIME - self.profiling[stage_index + 1]['fn_init_offset']
+            for i in range(stage_index + 1, len(self.profiling)):
+                self.profiling[i]['fn_init_offset'] += offset
+                if 'vm_init_offset' in self.profiling[i] and self.profiling[i]['vm_init_offset'] is not None:
+                    self.profiling[i]['vm_init_offset'] += offset
+        else:
+            handle_job_after_eviction(call_ids)
+            if stage_index < len(self.profiling) - 1:
+                offset = eviction_offset + EC2_INIT_TIME - self.profiling[stage_index + 1]['fn_init_offset'] + \
+                         self.profiling[stage_index]['duration']
+                # kill all vms on my stage
+                self.profiling[stage_index]['kill_size'] = self.profiling[stage_index]['exec_size']
+                # make that next stage init all vms again
+                self.profiling[stage_index + 1]['init_size'] = self.profiling[stage_index + 1]['exec_size']
+                if ('vm_init_offset' not in self.profiling[stage_index + 1] or
+                        self.profiling[stage_index + 1]['vm_init_offset'] is None):
+                    self.profiling[stage_index + 1]['vm_init_offset'] = my_startup_time(self.profiling,
+                                                                                        stage_index + 1) - EC2_INIT_TIME
+            for i in range(stage_index + 1, len(self.profiling)):
+                self.profiling[i]['fn_init_offset'] += offset
+                if 'vm_init_offset' in self.profiling[i] and self.profiling[i]['vm_init_offset'] is not None:
+                    self.profiling[i]['vm_init_offset'] += offset
+        return self.profiling
+
+    def replace_worker(self, worker_name):
+        for w in self.backend.workers.copy():
+            if w.name == worker_name:
+                self.backend.workers.remove(w)
+                w.delete()
+                break
+        new_workers = self.backend.create_worker("lithops-worker-fd56aacb")
+        worker_instances = [
+            {'name': new_workers.name,
+             'private_ip': new_workers.private_ip,
+             'instance_id': new_workers.instance_id,
+             'ssh_credentials': new_workers.ssh_credentials}
+        ]
+        # Initialize the workers
+        work_queue_name = (f'wq:{self.backend.get_worker_instance_type()}-'
+                           f'{self.standalone_config[self.standalone_handler.backend_name]["worker_processes"]}')
+        Thread(target=handle_workers, args=(worker_instances, work_queue_name)).start()
 
 
 def get_stage_by_tstamp(profiling, tstamp):
@@ -192,72 +262,6 @@ def my_startup_time(profiling, my_index):
         if profiling[i]['exec_size'] == profiling[i]['init_size']:
             total_time += EC2_INIT_TIME
     return total_time
-
-
-class SpotMonitor(threading.Thread):
-    def __init__(self, standalone_handler, profiling):
-        threading.Thread.__init__(self)
-        self.standalone_handler = standalone_handler
-        self.backend = self.standalone_handler.backend
-        self.evictions = []
-        self.profiling = profiling
-        logger.info(f"Initiating SpotMonitor thread")
-
-    def run(self):
-        try:
-            pubsub.subscribe('eviction')
-            logger.info("Subscribed to eviction pubsub channel")
-            for message in pubsub.listen():
-                logger.info("Received eviction message")
-                if message['type'] == 'message':
-                    logger.info("Received eviction message is a 'message' type")
-                    message = json.loads(message['data'])
-                    logger.info(f"Received eviction message: {message}")
-                    worker_name = message['worker_name']
-                    call_ids = message['call_ids']
-                    self.replace_worker(worker_name)
-                    self.eviction_handler(call_ids, time.time())
-        except Exception as e:
-            logger.exception(e)
-            logger.error("SpotMonitor stopped due to an exception")
-
-    def eviction_handler(self, call_ids, tstamp):
-        self.evictions.append({'tstamp': tstamp})
-        stage_index = get_stage_by_tstamp(self.profiling, tstamp)
-        # check if stage is finishable or not
-        finishable = (self.profiling[stage_index]['fn_init_offset'] +
-                      self.profiling[stage_index]['duration'] <= tstamp + EVICTION_TIME)
-        if finishable:
-            offset = tstamp + EC2_INIT_TIME - self.profiling[stage_index + 1]['fn_init_offset']
-            for i in range(stage_index + 1, len(self.profiling)):
-                self.profiling[i]['fn_init_offset'] += offset
-                if 'vm_init_offset' in self.profiling[i] and self.profiling[i]['vm_init_offset'] is not None:
-                    self.profiling[i]['vm_init_offset'] += offset
-        else:
-            handle_job_after_eviction(call_ids)
-            offset = tstamp + EC2_INIT_TIME - self.profiling[stage_index + 1]['fn_init_offset'] + \
-                     self.profiling[stage_index]['duration']
-            # kill all vms on my stage
-            self.profiling[stage_index]['kill_size'] = self.profiling[stage_index]['exec_size']
-            # make that next stage init all vms again
-            self.profiling[stage_index + 1]['init_size'] = self.profiling[stage_index + 1]['exec_size']
-            if ('vm_init_offset' not in self.profiling[stage_index + 1] or
-                    self.profiling[stage_index + 1]['vm_init_offset'] is None):
-                self.profiling[stage_index + 1]['vm_init_offset'] = my_startup_time(self.profiling,
-                                                                                    stage_index + 1) - EC2_INIT_TIME
-            for i in range(stage_index + 1, len(self.profiling)):
-                self.profiling[i]['fn_init_offset'] += offset
-                if 'vm_init_offset' in self.profiling[i] and self.profiling[i]['vm_init_offset'] is not None:
-                    self.profiling[i]['vm_init_offset'] += offset
-        return self.profiling
-
-    def replace_worker(self, worker_name):
-        for w in self.backend.workers.copy():
-            if w.name == worker_name:
-                self.backend.workers.remove(w)
-                w.delete()
-                break
-        self.backend.create_worker(worker_name)
 
 
 def get_worker_ttd(worker_private_ip):
@@ -658,10 +662,11 @@ def list_jobs():
 
 def handle_job_after_eviction(call_ids):
     queue_name = f"wq:{latest_job_payload['worker_instance_type']}-{latest_job_payload['worker_processes']}"
+    dbr = latest_job_payload['data_byte_ranges']
     for call_id in call_ids:
         task_payload = copy.deepcopy(latest_job_payload)
         task_payload['call_ids'] = [call_id]
-        task_payload['data_byte_ranges'] = [latest_job_payload['data_byte_ranges'][call_id]]
+        task_payload['data_byte_ranges'] = [dbr[int(call_id)]]
         redis_client.lpush(queue_name, json.dumps(task_payload))
         logging.info(f"Resubmitting task with call_id: {call_id}")
 
@@ -700,6 +705,7 @@ def run():
     """
     Entry point for running jobs
     """
+    global latest_job_payload
     try:
         job_payload = flask.request.get_json(force=True, silent=True)
         latest_job_payload = job_payload
@@ -833,7 +839,6 @@ def main():
     global proactive_scheduler
     global spot_monitor
     global master_ip
-    global latest_job_payload
 
     os.makedirs(LITHOPS_TEMP_DIR, exist_ok=True)
 
@@ -853,8 +858,6 @@ def main():
     profiling = standalone_config['profiling']
     if standalone_handler.exec_mode == StandaloneMode.PROFILED:
         proactive_scheduler = ProactiveScheduler(standalone_handler, profiling)
-        spot_monitor = SpotMonitor(standalone_handler, profiling)
-        spot_monitor.start()
 
     budget_keeper = BudgetKeeper(standalone_config, master_data, stop_callback=clean)
     budget_keeper.start()
