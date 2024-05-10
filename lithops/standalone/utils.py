@@ -15,7 +15,7 @@ from lithops.constants import (
 )
 
 
-def is_worker_free(worker_private_ip):
+def is_worker_free(worker_private_ip, full=False, worker_processes=0):
     """
     Checks if the Lithops service is ready and free in the worker VM instance
     """
@@ -23,7 +23,10 @@ def is_worker_free(worker_private_ip):
     try:
         r = requests.get(url, timeout=0.5)
         resp = r.json()
-        return True if resp.get('free', 0) > 0 else False
+        if not full:
+            return True if resp.get('free', 0) > 0 else False
+        else:
+            return resp.get('free', 0) == worker_processes
     except Exception:
         return False
 

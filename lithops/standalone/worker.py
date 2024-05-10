@@ -88,9 +88,9 @@ class EvictionMonitor(Thread):
 
     def run(self):
         while self.notified is False:
-            # if is_evicted():
+            if is_evicted():
             # TODO-SCHEDULING: Un-hardcode this
-            if self.eviction_counter >= 20 and self.worker_name == get_zero_worker_name():
+            # if self.eviction_counter >= 20 and self.worker_name == get_zero_worker_name():
                 logger.info(f"Instance eviction detected. Stopping worker {self.worker_name}")
                 notify_worker_evicted(self.worker_name)
                 self.notified = True

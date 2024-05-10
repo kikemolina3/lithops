@@ -95,6 +95,7 @@ class AWSEC2Backend:
         self.user_key = self.user_id.split(":")[0][-4:].lower()
 
         self.master = None
+        self.all_workers = []
         self.workers = []
 
         msg = COMPUTE_CLI_MSG.format('AWS EC2')
@@ -1004,6 +1005,7 @@ class AWSEC2Backend:
 
         worker.create(user_data=user_data)
         self.workers.append(worker)
+        self.all_workers.append(worker)
         return worker
 
     def create_workers(self, workers_to_create, worker_id_base):
@@ -1027,6 +1029,29 @@ class AWSEC2Backend:
         logger.debug(f"Total worker VM instances created: {len(new_workers)}/{workers_to_create}")
 
         return list(new_workers)
+
+    def get_workers_history(self):
+        """
+        Returns the workers init & shutdown timestamp
+        """
+        result = []
+        for worker in self.all_workers:
+            item = {}
+            response = self.ec2_client.describe_instances(InstanceIds=[worker.instance_id])
+            for res in response['Reservations']:
+                for ins in res['Instances']:
+                    if ins['InstanceId'] == worker.instance_id:
+                        item['instance_id'] = worker.instance_id
+                        item['init_stamp'] = ins['LaunchTime'].timestamp()
+                        if ins['StateTransitionReason'] != "":
+                            end_tstamp_str = re.findall('.*\((.*)\)', ins['StateTransitionReason'])[0]
+                            end_tstamp = datetime.strptime(end_tstamp_str, "%Y-%m-%d %H:%M:%S GMT").timestamp()
+                        else:
+                            end_tstamp = datetime.now().timestamp()
+                        item['end_stamp'] = end_tstamp
+                        result.append(item)
+        return result
+
 
     def get_runtime_key(self, runtime_name, version=__version__):
         """
@@ -1393,7 +1418,7 @@ class EC2Instance:
         self.ec2_client.terminate_instances(InstanceIds=[self.instance_id])
 
         self.instance_data = None
-        self.instance_id = None
+        # self.instance_id = None
         self.private_ip = None
         self.public_ip = '0.0.0.0'
         self.del_ssh_client()

@@ -1,24 +1,25 @@
 first_stages = [
     {
-        'num_fn': 4,
-        'duration': 300
+        'memory': 2048,
+        'num_fn': 2,
+        'duration': 20
     }
 ]
 
 hello_stages = [
     {
-        'memory': 2048,
-        'num_fn': 2,
+        'memory': 512,
+        'num_fn': 8,
         'duration': 100
     },
     {
-        'memory': 2048,
-        'num_fn': 10,
+        'memory': 512,
+        'num_fn': 40,
         'duration': 120
     },
     {
-        'memory': 2048,
-        'num_fn': 4,
+        'memory': 512,
+        'num_fn': 16,
         'duration': 30
     }
 ]

@@ -148,7 +148,8 @@ class ProactiveScheduler(threading.Thread):
             logger.info("Killed instances: {killed_instances}")
             logger.info(f"Alive instances: {len(self.backend.workers)}")
             for instance in self.backend.workers.copy():
-                free = is_worker_free(instance.get_private_ip())
+                free = is_worker_free(instance.get_private_ip(), full=True,
+                                      worker_processes=latest_job_payload['worker_processes'])
                 logger.info(f"Instance {instance.name} ({instance.get_private_ip()}) is free: {free}")
                 if free:
                     self.backend.workers.remove(instance)
@@ -280,6 +281,19 @@ def get_worker_ttd(worker_private_ip):
     except Exception as e:
         logger.error(f"Unable to get TTD from {worker_private_ip}: {e}")
         return "Unknown"
+
+
+@app.route('/worker/history', methods=['GET'])
+def get_workers_history():
+    """
+    Returns the workers init & shutdown timestamp for all workers attached to this master VM
+    """
+    try:
+        logger.debug('Processing workers history request')
+        result = standalone_handler.backend.get_workers_history()
+        return flask.jsonify(result)
+    except Exception as e:
+        logger.exception(e)
 
 
 @app.route('/worker/list', methods=['GET'])

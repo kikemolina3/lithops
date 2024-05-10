@@ -2,7 +2,7 @@ import lithops
 import time
 
 from lithops.scheduler.scheduler import LithopsScheduler
-from lithops.scheduler.use_cases import stages_list
+from lithops.scheduler.use_cases import hello_stages, first_stages
 
 
 def my_map_function(id, x):
@@ -14,14 +14,13 @@ def my_map_function(id, x):
 
 
 if __name__ == "__main__":
-    # fexec = lithops.FunctionExecutor(profiling=first_profiling)
-    # for step in first_profiling:
-    #     num_fn = step["exec_size"] // 2
-    #     params = [step["duration"] for i in range(int(num_fn))]
-    #     result = fexec.map(my_map_function, params).get_result()
-    #     print(result)
-    # fexec.plot(dst='.')
-    # stages_list is list of all vars in use_cases.py
-    for i in stages_list:
-        x = LithopsScheduler(i)
-        x.draw()
+    stages = hello_stages
+    profiling = LithopsScheduler(stages).profiling
+    fexec = lithops.FunctionExecutor(profiling=profiling)
+    for index, step in enumerate(profiling):
+        num_fn = stages[index]["num_fn"]
+        params = [step["duration"] for i in range(int(num_fn))]
+        result = fexec.map(my_map_function, params).get_result()
+        print(result)
+    fexec.plot(dst='.')
+    fexec.dump_stats_to_csv("hello_stats")

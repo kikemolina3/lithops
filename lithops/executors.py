@@ -625,6 +625,24 @@ class FunctionExecutor:
             cmd = [sys.executable, '-m', 'lithops.scripts.cleaner']
             CLEANER_PROCESS = sp.Popen(cmd, start_new_session=True)
 
+    def dump_stats_to_csv(self, filename="lithops_stats"):
+        """
+        Dumps the stats of all the futures to a csv file
+        """
+        import pandas as pd
+
+        vms_data = self.compute_handler._make_request('GET', 'worker/history')
+
+        stats = []
+        for f in self.futures:
+            stats.append(f.stats)
+
+        df = pd.DataFrame(stats)
+        df.to_csv(f'{filename}.csv', index=False)
+
+        df = pd.DataFrame(vms_data)
+        df.to_csv(f'{filename}_vms.csv', index=False)
+
     def job_summary(self, cloud_objects_n: Optional[int] = 0):
         """
         Logs information of a job executed by the calling function executor.

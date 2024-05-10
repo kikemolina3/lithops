@@ -20,4 +20,5 @@ if __name__ == "__main__":
     fexec = lithops.FunctionExecutor()
     fexec.map(my_map_function, range(2))
     fexec.map(my_map_function, range(6))
-    print(fexec.get_result())
+    result = fexec.get_result()
+    print(result)
