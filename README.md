@@ -130,7 +130,7 @@ if __name__ == "__main__":
 from lithops.storage.cloud_proxy import os
 
 if __name__ == "__main__":
-    filepath = 'bar/foo.txt'
+    filepath = 'bar/terasort.txt'
     with os.open(filepath, 'w') as f:
         f.write('Hello world!')
 

@@ -2,7 +2,7 @@ import lithops
 import time
 
 from lithops.scheduler.scheduler import LithopsScheduler
-from lithops.scheduler.use_cases import hello_stages, first_stages
+from lithops.scheduler.use_cases import *
 
 
 def my_map_function(id, x):
@@ -14,7 +14,7 @@ def my_map_function(id, x):
 
 
 if __name__ == "__main__":
-    stages = hello_stages
+    stages = variant_calling_stages
     profiling = LithopsScheduler(stages).profiling
     fexec = lithops.FunctionExecutor(profiling=profiling)
     for index, step in enumerate(profiling):
@@ -23,4 +23,4 @@ if __name__ == "__main__":
         result = fexec.map(my_map_function, params).get_result()
         print(result)
     fexec.plot(dst='.')
-    fexec.dump_stats_to_csv("hello_stats")
+    fexec.dump_stats_to_csv("variant")

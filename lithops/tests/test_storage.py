@@ -91,8 +91,8 @@ class TestStorage:
     def test_list_keys(self):
         logger.info('Testing Storage.list_keys')
         test_keys = sorted([
-            STORAGE_PREFIX + '/foo/baz',
-            STORAGE_PREFIX + '/foo/bar/baz',
+            STORAGE_PREFIX + '/terasort/baz',
+            STORAGE_PREFIX + '/terasort/bar/baz',
             STORAGE_PREFIX + '/foo_bar/baz',
             STORAGE_PREFIX + '/foo_baz',
             STORAGE_PREFIX + '/bar',
@@ -103,8 +103,8 @@ class TestStorage:
 
         all_bucket_keys = self.storage.list_keys(self.bucket)
         prefix_keys = self.storage.list_keys(self.bucket, STORAGE_PREFIX)
-        foo_keys = self.storage.list_keys(self.bucket, STORAGE_PREFIX + '/foo')
-        foo_slash_keys = self.storage.list_keys(self.bucket, STORAGE_PREFIX + '/foo/')
+        foo_keys = self.storage.list_keys(self.bucket, STORAGE_PREFIX + '/terasort')
+        foo_slash_keys = self.storage.list_keys(self.bucket, STORAGE_PREFIX + '/terasort/')
         bar_keys = self.storage.list_keys(self.bucket, STORAGE_PREFIX + '/bar')
         non_existent_keys = self.storage.list_keys(self.bucket, STORAGE_PREFIX + '/doesnt_exist')
 
@@ -112,14 +112,14 @@ class TestStorage:
         assert set(prefix_keys).issuperset(test_keys)
         assert all(key.startswith(STORAGE_PREFIX) for key in prefix_keys)
         assert sorted(foo_keys) == sorted([
-            STORAGE_PREFIX + '/foo/baz',
-            STORAGE_PREFIX + '/foo/bar/baz',
+            STORAGE_PREFIX + '/terasort/baz',
+            STORAGE_PREFIX + '/terasort/bar/baz',
             STORAGE_PREFIX + '/foo_bar/baz',
             STORAGE_PREFIX + '/foo_baz',
         ])
         assert sorted(foo_slash_keys) == sorted([
-            STORAGE_PREFIX + '/foo/baz',
-            STORAGE_PREFIX + '/foo/bar/baz',
+            STORAGE_PREFIX + '/terasort/baz',
+            STORAGE_PREFIX + '/terasort/bar/baz',
         ])
         assert sorted(bar_keys) == sorted([
             STORAGE_PREFIX + '/bar',
@@ -142,8 +142,8 @@ class TestStorage:
     def test_list_objects(self):
         logger.info('Testing Storage.list_objects')
         test_keys = sorted([
-            STORAGE_PREFIX + '/foo/baz',
-            STORAGE_PREFIX + '/foo/bar/baz',
+            STORAGE_PREFIX + '/terasort/baz',
+            STORAGE_PREFIX + '/terasort/bar/baz',
             STORAGE_PREFIX + '/foo_bar/baz',
             STORAGE_PREFIX + '/foo_baz',
             STORAGE_PREFIX + '/bar',
@@ -154,8 +154,8 @@ class TestStorage:
 
         all_bucket_objects = self.storage.list_objects(self.bucket)
         prefix_objects = self.storage.list_objects(self.bucket, STORAGE_PREFIX)
-        foo_objects = self.storage.list_objects(self.bucket, STORAGE_PREFIX + '/foo')
-        foo_slash_objects = self.storage.list_objects(self.bucket, STORAGE_PREFIX + '/foo/')
+        foo_objects = self.storage.list_objects(self.bucket, STORAGE_PREFIX + '/terasort')
+        foo_slash_objects = self.storage.list_objects(self.bucket, STORAGE_PREFIX + '/terasort/')
         bar_objects = self.storage.list_objects(self.bucket, STORAGE_PREFIX + '/bar')
         non_existent_objects = self.storage.list_objects(self.bucket, STORAGE_PREFIX + '/doesnt_exist')
 
@@ -169,14 +169,14 @@ class TestStorage:
         assert set(extract_keys(prefix_objects)).issuperset(test_keys)
         assert all(key.startswith(STORAGE_PREFIX) for key in extract_keys(prefix_objects))
         assert sorted(extract_keys(foo_objects)) == sorted([
-            STORAGE_PREFIX + '/foo/baz',
-            STORAGE_PREFIX + '/foo/bar/baz',
+            STORAGE_PREFIX + '/terasort/baz',
+            STORAGE_PREFIX + '/terasort/bar/baz',
             STORAGE_PREFIX + '/foo_bar/baz',
             STORAGE_PREFIX + '/foo_baz',
         ])
         assert sorted(extract_keys(foo_slash_objects)) == sorted([
-            STORAGE_PREFIX + '/foo/baz',
-            STORAGE_PREFIX + '/foo/bar/baz',
+            STORAGE_PREFIX + '/terasort/baz',
+            STORAGE_PREFIX + '/terasort/bar/baz',
         ])
         assert sorted(extract_keys(bar_objects)) == sorted([
             STORAGE_PREFIX + '/bar',
@@ -188,8 +188,8 @@ class TestStorage:
     def test_list_objects_size(self):
         logger.info('Testing Storage.list_objects_size')
         test_keys = sorted([
-            STORAGE_PREFIX + '/list/foo/baz',
-            STORAGE_PREFIX + '/list/foo/bar/baz',
+            STORAGE_PREFIX + '/list/terasort/baz',
+            STORAGE_PREFIX + '/list/terasort/bar/baz',
             STORAGE_PREFIX + '/list/foo_bar/baz',
             STORAGE_PREFIX + '/list/foo_baz',
             STORAGE_PREFIX + '/list/bar',
@@ -205,8 +205,8 @@ class TestStorage:
     def test_delete_object(self):
         logger.info('Testing Storage.delete_object')
         test_keys = sorted([
-            STORAGE_PREFIX + '/delete/foo/baz',
-            STORAGE_PREFIX + '/foo/bar/baz',
+            STORAGE_PREFIX + '/delete/terasort/baz',
+            STORAGE_PREFIX + '/terasort/bar/baz',
             STORAGE_PREFIX + '/foo_baz',
             STORAGE_PREFIX + '/bar',
             STORAGE_PREFIX + '/to_be_deleted',
@@ -221,8 +221,8 @@ class TestStorage:
     def test_delete_objects(self):
         logger.info('Testing Storage.delete_objects')
         test_keys = sorted([
-            STORAGE_PREFIX + '/foo/baz',
-            STORAGE_PREFIX + '/foo/bar/baz',
+            STORAGE_PREFIX + '/terasort/baz',
+            STORAGE_PREFIX + '/terasort/bar/baz',
             STORAGE_PREFIX + '/foo_baz',
             STORAGE_PREFIX + '/bar',
             STORAGE_PREFIX + '/to_be_deleted1',
@@ -249,8 +249,8 @@ class TestStorage:
     def test_delete_cloudobject(self):
         logger.info('Testing Storage.delete_cloudobject')
         test_keys = sorted([
-            STORAGE_PREFIX + '/foo/baz',
-            STORAGE_PREFIX + '/foo/bar/baz',
+            STORAGE_PREFIX + '/terasort/baz',
+            STORAGE_PREFIX + '/terasort/bar/baz',
             STORAGE_PREFIX + '/foo_baz',
             STORAGE_PREFIX + '/bar',
             STORAGE_PREFIX + '/to_be_deleted',
@@ -265,8 +265,8 @@ class TestStorage:
     def test_delete_cloudobjects(self):
         logger.info('Testing Storage.delete_cloudobjects')
         test_keys = sorted([
-            STORAGE_PREFIX + '/foo/baz',
-            STORAGE_PREFIX + '/foo/bar/baz',
+            STORAGE_PREFIX + '/terasort/baz',
+            STORAGE_PREFIX + '/terasort/bar/baz',
             STORAGE_PREFIX + '/foo_baz',
             STORAGE_PREFIX + '/bar',
             STORAGE_PREFIX + '/to_be_deleted1',

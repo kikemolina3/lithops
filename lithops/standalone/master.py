@@ -81,6 +81,7 @@ budget_keeper = None
 master_ip = None
 proactive_scheduler = None
 latest_job_payload = None
+job_index = -1
 
 
 # /---------------------------------------------------------------------------/
@@ -130,7 +131,9 @@ class ProactiveScheduler(threading.Thread):
                 for index in stages_to_kill.copy():
                     stage = self.profiling[index]
                     if ('kill_size' in stage and stage['kill_size'] != 0 and
-                            self.current_offset >= stage['fn_init_offset'] + stage['duration']):
+                            self.current_offset >= stage['fn_init_offset'] + stage['duration'] and
+                            (job_index > stage['step'])):
+                        # or job_index == len(self.profiling) - 1
                         # Check if functions over VMs finished and if so, kill VMs
                         Thread(target=self.stop_instances, args=(stage,)).start()
                         stages_to_kill.remove(index)
@@ -206,7 +209,9 @@ class ProactiveScheduler(threading.Thread):
                       self.profiling[stage_index]['duration'] <= eviction_offset + EVICTION_TIME)
         if finishable:
             if stage_index < len(self.profiling) - 1:
-                offset = eviction_offset + EC2_INIT_TIME - self.profiling[stage_index + 1]['fn_init_offset']
+                offset = max(eviction_offset + EC2_INIT_TIME - self.profiling[stage_index + 1]['fn_init_offset'],
+                             my_startup_time(self.profiling, stage_index + 1) - self.profiling[stage_index][
+                                 'duration'] - eviction_offset)
             for i in range(stage_index + 1, len(self.profiling)):
                 self.profiling[i]['fn_init_offset'] += offset
                 if 'vm_init_offset' in self.profiling[i] and self.profiling[i]['vm_init_offset'] is not None:
@@ -291,6 +296,26 @@ def get_workers_history():
     try:
         logger.debug('Processing workers history request')
         result = standalone_handler.backend.get_workers_history()
+        return flask.jsonify(result)
+    except Exception as e:
+        logger.exception(e)
+
+
+@app.route('/worker/evictions', methods=['GET'])
+def get_workers_evictions():
+    try:
+        logger.debug('Processing workers evictions request')
+        result = proactive_scheduler.evictions
+        return flask.jsonify(result)
+    except Exception as e:
+        logger.exception(e)
+
+
+@app.route('/worker/profiling', methods=['GET'])
+def get_my_profiling():
+    try:
+        logger.debug('Processing profiling request')
+        result = proactive_scheduler.profiling
         return flask.jsonify(result)
     except Exception as e:
         logger.exception(e)
@@ -710,8 +735,8 @@ def handle_job(job_payload, queue_name):
         task_payload['call_ids'] = [call_id]
         task_payload['data_byte_ranges'] = [dbr[int(call_id)]]
         redis_client.lpush(queue_name, json.dumps(task_payload))
-
-    logger.debug(f"Job {job_key} correctly submitted to work queue '{queue_name}'")
+    list_len = redis_client.llen(queue_name)
+    logger.debug(f"Job {job_key} correctly submitted to work queue '{queue_name}' with {list_len} tasks")
 
 
 @app.route('/job/run', methods=['POST'])
@@ -720,6 +745,7 @@ def run():
     Entry point for running jobs
     """
     global latest_job_payload
+    global job_index
     try:
         job_payload = flask.request.get_json(force=True, silent=True)
         latest_job_payload = job_payload
@@ -761,6 +787,7 @@ def run():
 
         act_id = str(uuid.uuid4()).replace('-', '')[:12]
         response = flask.jsonify({'activationId': act_id})
+        job_index += 1
         response.status_code = 202
 
         return response

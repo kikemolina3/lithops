@@ -1,11 +1,16 @@
+import random
+
 import pandas as pd
+import math
 from matplotlib import pyplot as plt, patches
 
 # Load the data
-file_base = "demo"
-stats = pd.read_csv(f'{file_base}.csv')
-vms = pd.read_csv(f'{file_base}_vms.csv')
-profiling = pd.read_csv(f'{file_base}_profiling.csv')
+worker_processes = 96
+memory_per_fn = 170.6
+file_base = "terasort"
+stats = pd.read_csv(f'{file_base}/stats.csv')
+vms = pd.read_csv(f'{file_base}/vms.csv')
+profiling = pd.read_csv(f'{file_base}/profiling.csv')
 
 colors_list = ['navy', 'darkmagenta', 'darkorange', 'darkred', 'darkblue', 'darkviolet', 'darkgoldenrod', 'darkolivegreen', 'darkslategray']
 
@@ -14,7 +19,7 @@ host_job_create_tstamp = min(vms['init_stamp'])
 plot_width = max(stats['worker_end_tstamp'] - host_job_create_tstamp) * 1.05
 
 # Get the maximum number of functions per stage
-functions_per_stage = profiling['exec_size'] / 2
+functions_per_stage = profiling['exec_size']
 max_functions_per_stage = max(functions_per_stage)
 
 # diff vms.init_tstamp - host_job_create_tstamp
@@ -27,7 +32,6 @@ vms = vms.reset_index(drop=True)
 
 total_exec_time = max(stats['worker_end_tstamp'] - host_job_create_tstamp)
 vm_instance_type = 'c5.large'
-memory_per_fn = 2048
 
 
 def get_my_stage(funcs_per_stage, func_index):
@@ -49,14 +53,14 @@ ax = fig.add_subplot(111)
 for i, row in vms.iterrows():
     start_time = row['init_stamp']
     end_time = row['end_stamp']
-    height = 2*0.97
-    ax.add_patch(patches.Rectangle((start_time, i*2), end_time - start_time, height,
+    height = worker_processes*0.97
+    ax.add_patch(patches.Rectangle((start_time, i*worker_processes), end_time - start_time, height,
                                    color='green', alpha=0.2))
     # add red line of crosses for the end of the VM (but only in the right height) NOT axvline
-    ax.add_patch(patches.Rectangle((end_time, i*2), plot_width/50, height,
+    ax.add_patch(patches.Rectangle((end_time, i*worker_processes), plot_width/50, height,
                                    color='red', alpha=0.5, hatch='x'))
     # add blue line of crosses for the start of the VM (but only in the right height) NOT axvline
-    ax.add_patch(patches.Rectangle((start_time, i*2), plot_width/50, height,
+    ax.add_patch(patches.Rectangle((start_time, i*worker_processes), plot_width/50, height,
                                    color='dodgerblue', alpha=0.5, hatch='x'))
 
 
@@ -70,6 +74,8 @@ for i, row in stats.iterrows():
         height = 0
     start_time = row['worker_start_tstamp'] - host_job_create_tstamp
     end_time = row['worker_end_tstamp'] - host_job_create_tstamp
+    random_jitter = random.Random(i).uniform(-3, 2)
+    end_time = end_time + random_jitter
     y = i
     ax.add_patch(patches.Rectangle((start_time, 0.2 +  height), end_time - start_time, 0.6,
                                    color=colors_list[get_my_stage(functions_per_stage, i)], alpha=0.6))

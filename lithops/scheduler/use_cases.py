@@ -112,59 +112,69 @@ extreme_stages = [
 
 ]
 
-
 variant_calling_stages = [
-    {
-        'input_data': 750,
-        'num_fn': 40,
-        'duration': 50,
-    },
+    # {
+    #     'input_data': 750,
+    #     'num_fn': 40,
+    #     'duration': 50,
+    #     'memory': 204.8,
+    # },
     {
         'num_fn': 1200,
         'duration': 55,
+        'memory': 204.8,
     },
-    {
-        'num_fn': 20,
-        'duration': 10,
-    },
-    {
-        'num_fn': 1500,
-        'duration': 25,
-    },
-    {
-        'num_fn': 40,
-        'duration': 40,
-    },
-    {
-        'num_fn': 120,
-        'duration': 100,
-    }
+    # {
+    #     'num_fn': 20,
+    #     'duration': 10,
+    #     'memory': 204.8,
+    # },
+    # {
+    #     'num_fn': 600,
+    #     'duration': 25,
+    #     'memory': 204.8,
+    # },
+    # {
+    #     'num_fn': 40,
+    #     'duration': 40,
+    #     'memory': 204.8,
+    # },
+    # {
+    #     'num_fn': 120,
+    #     'duration': 100,
+    #     'memory': 204.8,
+    # }
 ]
 
+# TERASORT SETUP
+# - 2 EC2 c7i.2xlarge: 8 cores, 16GB RAM
+# - worker_processes = 96
 terasort_stages = [
     {
-        'input_data': 1024*100, # 100GB
+        'input_data': 1024 * 100,  # 100GB
         'num_fn': 192,
-        'duration': 75
+        'memory': 170.66,
+        'duration': 60
     },
     {
         'num_fn': 192,
-        'duration': 75
+        'memory': 170.66,
+        'duration': 45
     },
 ]
 
 astronomics_stages = [
     {
-        'input_data': 1024*8, # 8GB
+        'input_data': 1024 * 8,  # 8GB
         'num_fn': 300,
         'duration': 300
     },
     {
-        'num_fn': 150,
+        'num_fn': 200,
         'duration': 250
     },
     {
-        'num_fn': 20,
+        'num_fn': 1,
         'duration': 120
     }
 ]
@@ -179,7 +189,3 @@ stages_list = [
     terasort_stages,
     astronomics_stages
 ]
-
-
-
-

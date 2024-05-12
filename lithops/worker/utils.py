@@ -21,6 +21,7 @@ import logging
 import pickle
 import platform
 import subprocess
+import time
 from contextlib import contextmanager
 
 from lithops.version import __version__ as lithops_ver
@@ -59,6 +60,9 @@ def get_function_and_modules(job, internal_storage):
             func_obj = f.read()
     elif os.path.exists(func_path):
         logger.info(f"Loading {job.func_key} from local cache")
+        while os.path.getsize(func_path) == 0:
+            logger.info(f"Waiting for {job.func_key} to be ready")
+            time.sleep(0.2)
         with open(func_path, 'rb') as f:
             func_obj = f.read()
     else:

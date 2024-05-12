@@ -63,7 +63,9 @@ class LithopsValidationError(Exception):
 
 
 VM_MEMORY_GB_DICT = {
-    'c5.large': 4
+    'c5.large': 4,
+    'c5.xlarge': 8,
+    'c5.2xlarge': 16,
 }
 
 MASTER_SERVICE_NAME = 'lithops-master.service'

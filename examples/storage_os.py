@@ -10,7 +10,7 @@ def map_func(x):
 
 if __name__ == "__main__":
     # Simple file write
-    filepath = 'bar/foo.txt'
+    filepath = 'bar/terasort.txt'
     with open(filepath, 'w') as f:
         f.write('Hello world!')
 

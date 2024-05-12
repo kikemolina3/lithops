@@ -1,10 +1,16 @@
+import math
 from typing import Tuple
 
 from matplotlib import pyplot as plt, patches
 from matplotlib import lines as mlines
 
-from lithops.scheduler.utils import EC2_INIT_TIME
+from lithops.scheduler.utils import EC2_INIT_TIME, EVICTION_TIME
 
+def get_stage_by_tstamp(profiling, tstamp):
+    for index, stage in enumerate(profiling):
+        if stage['fn_init_offset'] <= tstamp <= stage['fn_init_offset'] + stage['duration']:
+            return index
+    return None
 
 def my_startup_time(profiling, my_index):
     total_time = 0
@@ -47,7 +53,7 @@ class LithopsScheduler:
         for index, stage in enumerate(self.stages):
             if 'memory' not in stage:
                 stage['memory'] = 256
-            stage['size'] = stage['num_fn'] * stage['memory'] / 1024
+            stage['size'] = math.ceil(stage['num_fn'] * stage['memory'] / 1024)
             stage['step'] = index
 
     def _generate_profiling(self):
@@ -152,7 +158,7 @@ class LithopsScheduler:
             # VERTICAL orange stripped line from 0 to the top of the diagram in eviction time
             ax.add_line(
                 mlines.Line2D([eviction['tstamp'], eviction['tstamp']],
-                              [-(height_diagram * 0.05), max([stage['exec_time'] for stage in self.profiling])],
+                              [-(height_diagram * 0.05), max([stage['exec_size'] for stage in self.profiling])],
                               color='orange', linestyle='--')
             )
 
@@ -173,3 +179,34 @@ class LithopsScheduler:
         ax.set_ylabel('# of functions')
 
         plt.show()
+
+    def evict(self, offset):
+        self.evictions.append({'tstamp': offset})
+        eviction_offset = offset
+        stage_index = get_stage_by_tstamp(self.profiling, eviction_offset)
+        # check if stage is finishable or not
+        finishable = (self.profiling[stage_index]['fn_init_offset'] +
+                      self.profiling[stage_index]['duration'] <= eviction_offset + EVICTION_TIME)
+        if finishable:
+            if stage_index < len(self.profiling) - 1:
+                offset = max(eviction_offset + EC2_INIT_TIME - self.profiling[stage_index + 1]['fn_init_offset'], my_startup_time(self.profiling, stage_index + 1) - self.profiling[stage_index]['duration'] - offset)
+            for i in range(stage_index + 1, len(self.profiling)):
+                self.profiling[i]['fn_init_offset'] += offset
+                if 'vm_init_offset' in self.profiling[i] and self.profiling[i]['vm_init_offset'] is not None:
+                    self.profiling[i]['vm_init_offset'] += offset
+        else:
+            if stage_index < len(self.profiling) - 1:
+                offset = eviction_offset + EC2_INIT_TIME - self.profiling[stage_index + 1]['fn_init_offset'] + \
+                         self.profiling[stage_index]['duration']
+                # kill all vms on my stage
+                self.profiling[stage_index]['kill_size'] = self.profiling[stage_index]['exec_size']
+                # make that next stage init all vms again
+                self.profiling[stage_index + 1]['init_size'] = self.profiling[stage_index + 1]['exec_size']
+                if ('vm_init_offset' not in self.profiling[stage_index + 1] or
+                        self.profiling[stage_index + 1]['vm_init_offset'] is None):
+                    self.profiling[stage_index + 1]['vm_init_offset'] = my_startup_time(self.profiling,
+                                                                                        stage_index + 1) - EC2_INIT_TIME
+            for i in range(stage_index + 1, len(self.profiling)):
+                self.profiling[i]['fn_init_offset'] += offset
+                if 'vm_init_offset' in self.profiling[i] and self.profiling[i]['vm_init_offset'] is not None:
+                    self.profiling[i]['vm_init_offset'] += offset
