@@ -202,7 +202,7 @@ def redis_queue_consumer(pid, work_queue_name, exec_mode, backend):
 
     worker_threads[pid]['status'] = WorkerStatus.IDLE.value
 
-    logger.info(f"Redis consumer process {pid} started")
+    logger.info(f"Redis consumer process {pid} started in work queue {work_queue_name}")
 
     while True:
         if exec_mode == StandaloneMode.CONSUME.value:

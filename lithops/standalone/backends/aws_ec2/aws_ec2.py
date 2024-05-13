@@ -961,6 +961,9 @@ class AWSEC2Backend:
         """
         instance = EC2Instance(name, self.config, self.ec2_client)
 
+        if not 'master' in name:
+            instance.worker_index = next((item for item in self.workers if item.name == name), -1).worker_index
+
         for key in kwargs:
             if hasattr(instance, key):
                 setattr(instance, key, kwargs[key])
@@ -1006,6 +1009,7 @@ class AWSEC2Backend:
         worker.create(user_data=user_data)
         self.workers.append(worker)
         self.all_workers.append(worker)
+        worker.worker_index = len(self.workers) - 1
         return worker
 
     def create_workers(self, workers_to_create, worker_id_base):
@@ -1087,6 +1091,8 @@ class EC2Instance:
         self.public_ip = '0.0.0.0'
         self.fast_io = self.config.get('fast_io', False)
         self.home_dir = '/home/ubuntu'
+
+        self.worker_index = None
 
         self.runtime_name = None
 

@@ -3,16 +3,17 @@ import random
 import pandas as pd
 import math
 from matplotlib import pyplot as plt, patches
+from matplotlib import colors as mcolors
 
 # Load the data
-worker_processes = 96
-memory_per_fn = 170.6
-file_base = "terasort"
+worker_processes = 20
+memory_per_fn = 204.8
+file_base = "variant"
 stats = pd.read_csv(f'{file_base}/stats.csv')
 vms = pd.read_csv(f'{file_base}/vms.csv')
 profiling = pd.read_csv(f'{file_base}/profiling.csv')
 
-colors_list = ['navy', 'darkmagenta', 'darkorange', 'darkred', 'darkblue', 'darkviolet', 'darkgoldenrod', 'darkolivegreen', 'darkslategray']
+colors_list = list(mcolors.TABLEAU_COLORS.values())
 
 # Get the start time of the first job
 host_job_create_tstamp = min(vms['init_stamp'])
@@ -55,13 +56,13 @@ for i, row in vms.iterrows():
     end_time = row['end_stamp']
     height = worker_processes*0.97
     ax.add_patch(patches.Rectangle((start_time, i*worker_processes), end_time - start_time, height,
-                                   color='green', alpha=0.2))
+                                   color='green', alpha=0.1))
     # add red line of crosses for the end of the VM (but only in the right height) NOT axvline
     ax.add_patch(patches.Rectangle((end_time, i*worker_processes), plot_width/50, height,
-                                   color='red', alpha=0.5, hatch='x'))
+                                   color='red', alpha=0.5, hatch='xxx'))
     # add blue line of crosses for the start of the VM (but only in the right height) NOT axvline
     ax.add_patch(patches.Rectangle((start_time, i*worker_processes), plot_width/50, height,
-                                   color='dodgerblue', alpha=0.5, hatch='x'))
+                                   color='dodgerblue', alpha=0.5, hatch='---'))
 
 
 aux = 0
@@ -74,11 +75,13 @@ for i, row in stats.iterrows():
         height = 0
     start_time = row['worker_start_tstamp'] - host_job_create_tstamp
     end_time = row['worker_end_tstamp'] - host_job_create_tstamp
-    random_jitter = random.Random(i).uniform(-3, 2)
+    # random_jitter = random.Random(i).uniform(-3, 2)
+    random_jitter = 0
     end_time = end_time + random_jitter
     y = i
     ax.add_patch(patches.Rectangle((start_time, 0.2 +  height), end_time - start_time, 0.6,
-                                   color=colors_list[get_my_stage(functions_per_stage, i)], alpha=0.6))
+                                   color=colors_list[get_my_stage(functions_per_stage, i)], alpha=0.4))
+    ax.text(start_time, height, 'x', fontsize=10,  ha='center', va='center',color=colors_list[get_my_stage(functions_per_stage, i)])
     height += 1
 
 # set limits and plot

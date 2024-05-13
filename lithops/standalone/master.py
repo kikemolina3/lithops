@@ -88,6 +88,17 @@ job_index = -1
 # Workers
 # /---------------------------------------------------------------------------/
 
+
+def handle_job_after_eviction(queue_name, call_ids):
+    dbr = latest_job_payload['data_byte_ranges']
+    for call_id in call_ids:
+        task_payload = copy.deepcopy(latest_job_payload)
+        task_payload['call_ids'] = [call_id]
+        task_payload['data_byte_ranges'] = [dbr[int(call_id)]]
+        redis_client.lpush(queue_name, json.dumps(task_payload))
+        logging.info(f"Resubmitting task with call_id: {call_id}")
+
+
 class ProactiveScheduler(threading.Thread):
     def __init__(self, standalone_handler, profiling):
         threading.Thread.__init__(self)
@@ -150,11 +161,13 @@ class ProactiveScheduler(threading.Thread):
         while killed_instances < number_of_instances:
             logger.info("Killed instances: {killed_instances}")
             logger.info(f"Alive instances: {len(self.backend.workers)}")
-            for instance in self.backend.workers.copy():
+            iterlist = self.backend.workers.copy()
+            iterlist.reverse()
+            for instance in iterlist:
                 free = is_worker_free(instance.get_private_ip(), full=True,
                                       worker_processes=latest_job_payload['worker_processes'])
                 logger.info(f"Instance {instance.name} ({instance.get_private_ip()}) is free: {free}")
-                if free:
+                if free and killed_instances < number_of_instances:
                     self.backend.workers.remove(instance)
                     instance.delete()
                     killed_instances += 1
@@ -190,6 +203,7 @@ class ProactiveScheduler(threading.Thread):
         new_workers = self.backend.create_workers(number_of_instances, f"{stage['step']}")
         worker_instances = [
             {'name': inst.name,
+             'queue_name': f'wq:{inst.worker_index}',
              'private_ip': inst.private_ip,
              'instance_id': inst.instance_id,
              'ssh_credentials': inst.ssh_credentials}
@@ -198,7 +212,8 @@ class ProactiveScheduler(threading.Thread):
         # Initialize the workers
         work_queue_name = (f'wq:{self.backend.get_worker_instance_type()}-'
                            f'{self.standalone_config[self.standalone_handler.backend_name]["worker_processes"]}')
-        Thread(target=handle_workers, args=(worker_instances, work_queue_name)).start()
+        Thread(target=handle_workers, args=(worker_instances, )).start()
+
 
     def modify_profiling(self, call_ids, tstamp):
         self.evictions.append({'tstamp': tstamp})
@@ -217,7 +232,7 @@ class ProactiveScheduler(threading.Thread):
                 if 'vm_init_offset' in self.profiling[i] and self.profiling[i]['vm_init_offset'] is not None:
                     self.profiling[i]['vm_init_offset'] += offset
         else:
-            handle_job_after_eviction(call_ids)
+            handle_job_after_eviction(f'wq:{self.backend.workers[-1].worker_index}', call_ids)
             if stage_index < len(self.profiling) - 1:
                 offset = eviction_offset + EC2_INIT_TIME - self.profiling[stage_index + 1]['fn_init_offset'] + \
                          self.profiling[stage_index]['duration']
@@ -241,17 +256,18 @@ class ProactiveScheduler(threading.Thread):
                 self.backend.workers.remove(w)
                 w.delete()
                 break
-        new_workers = self.backend.create_worker("lithops-worker-fd56aacb")
+        new_worker = self.backend.create_worker("lithops-worker-fd56aacb")
         worker_instances = [
-            {'name': new_workers.name,
-             'private_ip': new_workers.private_ip,
-             'instance_id': new_workers.instance_id,
-             'ssh_credentials': new_workers.ssh_credentials}
+            {'name': new_worker.name,
+             'queue_name': f'wq:worker-{new_worker.worker_index}',
+             'private_ip': new_worker.private_ip,
+             'instance_id': new_worker.instance_id,
+             'ssh_credentials': new_worker.ssh_credentials}
         ]
         # Initialize the workers
-        work_queue_name = (f'wq:{self.backend.get_worker_instance_type()}-'
-                           f'{self.standalone_config[self.standalone_handler.backend_name]["worker_processes"]}')
-        Thread(target=handle_workers, args=(worker_instances, work_queue_name)).start()
+        # work_queue_name = (f'wq:{self.backend.get_worker_instance_type()}-'
+        #                    f'{self.standalone_config[self.standalone_handler.backend_name]["worker_processes"]}')
+        Thread(target=handle_workers, args=(worker_instances, )).start()
 
 
 def get_stage_by_tstamp(profiling, tstamp):
@@ -413,7 +429,7 @@ def get_workers():
     return response
 
 
-def save_worker(worker, standalone_config, work_queue_name):
+def save_worker(worker, standalone_config):
     """
     Saves the worker instance with the provided data in redis
     """
@@ -437,12 +453,12 @@ def save_worker(worker, standalone_config, work_queue_name):
         'worker_processes': worker_processes,
         'created': str(time.time()),
         'ssh_credentials': json.dumps(worker.ssh_credentials),
-        'queue_name': work_queue_name,
+        'queue_name': f'wq:worker-{worker.worker_index}',
         'err': "", **config,
     })
 
 
-def setup_worker_create_reuse(worker_info, work_queue_name):
+def setup_worker_create_reuse(worker_info):
     """
     Run the worker setup process and installs all the Lithops dependencies into it
     """
@@ -451,7 +467,7 @@ def setup_worker_create_reuse(worker_info, work_queue_name):
     if redis_client.hget(f"worker:{worker.name}", 'status') == WorkerStatus.ACTIVE.value:
         return
 
-    save_worker(worker, standalone_handler.config, work_queue_name)
+    save_worker(worker, standalone_handler.config)
 
     max_instance_create_retries = worker.config.get('worker_create_retries', MAX_INSTANCE_CREATE_RETRIES)
 
@@ -512,7 +528,7 @@ def setup_worker_create_reuse(worker_info, work_queue_name):
             'ssh_credentials': worker.ssh_credentials,
             'instance_type': worker.instance_type,
             'master_ip': master_ip,
-            'work_queue_name': work_queue_name,
+            'work_queue_name': f'wq:worker-{worker.worker_index}',
             'lithops_version': __version__
         }
         remote_script = "/tmp/install_lithops.sh"
@@ -574,7 +590,7 @@ def setup_worker_consume(worker_info, work_queue_name):
         raise e
 
 
-def handle_workers(workers, work_queue_name):
+def handle_workers(workers):
     """
     Creates the workers (if any)
     """
@@ -588,10 +604,7 @@ def handle_workers(workers, work_queue_name):
 
     if standalone_handler.exec_mode == StandaloneMode.CONSUME:
         try:
-            setup_worker_consume(
-                workers[0],
-                work_queue_name
-            )
+            setup_worker_consume(workers[0])
             total_correct += 1
         except Exception as e:
             logger.error(e)
@@ -600,8 +613,7 @@ def handle_workers(workers, work_queue_name):
             for worker_info in workers:
                 future = executor.submit(
                     setup_worker_create_reuse,
-                    worker_info,
-                    work_queue_name
+                    worker_info
                 )
                 futures.append(future)
 
@@ -614,7 +626,7 @@ def handle_workers(workers, work_queue_name):
 
     logger.debug(
         f'{total_correct} of {len(workers)} workers started '
-        f'for work queue: {work_queue_name}'
+        f'for work queue: particular queue'
     )
 
 
@@ -699,18 +711,12 @@ def list_jobs():
     return flask.jsonify(result)
 
 
-def handle_job_after_eviction(call_ids):
-    queue_name = f"wq:{latest_job_payload['worker_instance_type']}-{latest_job_payload['worker_processes']}"
-    dbr = latest_job_payload['data_byte_ranges']
-    for call_id in call_ids:
-        task_payload = copy.deepcopy(latest_job_payload)
-        task_payload['call_ids'] = [call_id]
-        task_payload['data_byte_ranges'] = [dbr[int(call_id)]]
-        redis_client.lpush(queue_name, json.dumps(task_payload))
-        logging.info(f"Resubmitting task with call_id: {call_id}")
+def get_my_worker_queue_name(my_index, worker_processes):
+    worker_index = my_index // worker_processes
+    return f'wq:worker-{worker_index}'
 
 
-def handle_job(job_payload, queue_name):
+def handle_job(job_payload):
     """
     Process responsible to put the job in redis and all the
     individual tasks in a work queue
@@ -726,7 +732,7 @@ def handle_job(job_payload, queue_name):
         'runtime_name': job_payload['runtime_name'],
         'exec_mode': job_payload['config']['standalone']['exec_mode'],
         'total_tasks': len(job_payload['call_ids']),
-        'queue_name': queue_name
+        'queue_name': ''
     })
 
     dbr = job_payload['data_byte_ranges']
@@ -734,9 +740,12 @@ def handle_job(job_payload, queue_name):
         task_payload = copy.deepcopy(job_payload)
         task_payload['call_ids'] = [call_id]
         task_payload['data_byte_ranges'] = [dbr[int(call_id)]]
+        logger.info("flag1")
+        queue_name = get_my_worker_queue_name(int(call_id), job_payload["worker_processes"])
+        logger.info(f"Submitting task with call_id: {call_id} to {queue_name}")
         redis_client.lpush(queue_name, json.dumps(task_payload))
-    list_len = redis_client.llen(queue_name)
-    logger.debug(f"Job {job_key} correctly submitted to work queue '{queue_name}' with {list_len} tasks")
+    # list_len = redis_client.llen(queue_name)
+    logger.debug(f"Job {job_key} correctly submitted to multiple work queues")
 
 
 @app.route('/job/run', methods=['POST'])
@@ -781,9 +790,9 @@ def run():
         elif exec_mode == StandaloneMode.PROFILED:
             queue_name = f'wq:{worker_it}-{worker_wp}'
 
-        Thread(target=handle_job, args=(job_payload, queue_name)).start()
+        Thread(target=handle_job, args=(job_payload, )).start()
         if exec_mode != StandaloneMode.PROFILED:
-            Thread(target=handle_workers, args=(workers, queue_name)).start()
+            Thread(target=handle_workers, args=(workers, )).start()
 
         act_id = str(uuid.uuid4()).replace('-', '')[:12]
         response = flask.jsonify({'activationId': act_id})
@@ -881,32 +890,38 @@ def main():
     global spot_monitor
     global master_ip
 
-    os.makedirs(LITHOPS_TEMP_DIR, exist_ok=True)
+    try:
 
-    with open(SA_CONFIG_FILE, 'r') as cf:
-        standalone_config = json.load(cf)
+        os.makedirs(LITHOPS_TEMP_DIR, exist_ok=True)
 
-    with open(SA_MASTER_DATA_FILE, 'r') as ad:
-        master_data = json.load(ad)
-        master_ip = master_data['private_ip']
+        with open(SA_CONFIG_FILE, 'r') as cf:
+            standalone_config = json.load(cf)
 
-    standalone_handler = StandaloneHandler(standalone_config)
-    standalone_handler.init()
+        with open(SA_MASTER_DATA_FILE, 'r') as ad:
+            master_data = json.load(ad)
+            master_ip = master_data['private_ip']
 
-    redis_client = redis.Redis(decode_responses=True)
-    pubsub = redis_client.pubsub()
+        standalone_handler = StandaloneHandler(standalone_config)
+        standalone_handler.init()
 
-    profiling = standalone_config['profiling']
-    if standalone_handler.exec_mode == StandaloneMode.PROFILED:
-        proactive_scheduler = ProactiveScheduler(standalone_handler, profiling)
+        redis_client = redis.Redis(decode_responses=True)
+        pubsub = redis_client.pubsub()
 
-    budget_keeper = BudgetKeeper(standalone_config, master_data, stop_callback=clean)
-    budget_keeper.start()
+        profiling = standalone_config['profiling']
+        if standalone_handler.exec_mode == StandaloneMode.PROFILED:
+            proactive_scheduler = ProactiveScheduler(standalone_handler, profiling)
 
-    Thread(target=job_monitor, daemon=True).start()
+        budget_keeper = BudgetKeeper(standalone_config, master_data, stop_callback=clean)
+        budget_keeper.start()
 
-    server = WSGIServer(('0.0.0.0', SA_MASTER_SERVICE_PORT), app, log=app.logger)
-    server.serve_forever()
+        Thread(target=job_monitor, daemon=True).start()
+
+        server = WSGIServer(('0.0.0.0', SA_MASTER_SERVICE_PORT), app, log=app.logger)
+        server.serve_forever()
+
+    except Exception as e:
+        logger.exception(e)
+        raise e
 
 
 if __name__ == '__main__':
