@@ -8,13 +8,9 @@ install_requires = [
     'tabulate',
     'pandas',
     'PyYAML',
-    'python-dateutil',
     'pika',
     'tqdm',
-    'lxml',
     'tblib',
-    'docker',
-    'boto3',
     'requests',
     'seaborn',
     'paramiko',
@@ -22,7 +18,6 @@ install_requires = [
     'kubernetes',
     'ibm-cos-sdk',
     'ibm-code-engine-sdk',
-    'redis',
     'ibm-vpc',
     'cloudpickle',
     'tblib',
@@ -43,6 +38,9 @@ extras_require = {
         'aliyun-fc2',
         'oss2'
     ],
+    'aws': [
+        'boto3'
+    ],
     'azure': [
         'azure-mgmt-resource',
         'azure-mgmt-compute',
@@ -51,7 +49,17 @@ extras_require = {
         'azure-storage-blob',
         'azure-storage-queue'
     ],
+    'ceph': [
+        'boto3'
+    ],
+    'minio': [
+        'boto3'
+    ],
+    'redis': [
+        'redis'
+    ],
     'multiprocessing': [
+        'redis',
         'pynng'
     ],
     'joblib': [

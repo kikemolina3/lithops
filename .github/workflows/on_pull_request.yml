@@ -5,6 +5,7 @@ on:
     branches:
       - master
     paths:
+      - 'setup.py'
       - 'lithops/**'
   
   workflow_dispatch: 
@@ -14,6 +15,7 @@ jobs:
 
   localhost_tests:
     runs-on: ubuntu-22.04
+    timeout-minutes: 5
     strategy:
       fail-fast: false
       matrix:
@@ -21,10 +23,10 @@ jobs:
 
     steps:
       - name: Clone Lithops repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Install Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -42,10 +44,10 @@ jobs:
 
     steps:
       - name: Clone Lithops repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Install Python 3.10
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 

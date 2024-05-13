@@ -25,7 +25,10 @@ import queue
 import threading
 import concurrent.futures as cf
 from tblib import pickling_support
-from lithops.constants import MONITORING_INTERVAL
+from lithops.constants import (
+    MONITORING_INTERVAL,
+    MONITORING_INTERVAL_LH
+)
 
 pickling_support.install()
 
@@ -80,11 +83,12 @@ class Monitor(threading.Thread):
         self._print_status_log()
 
         for future in fs:
-            self.futures.remove(future)
+            if future in self.futures:
+                self.futures.remove(future)
 
-        present_jobs = {future.job_id for future in fs}
-        for job_id in present_jobs:
-            self.present_jobs.remove(job_id)
+        for job_id in {future.job_id for future in fs}:
+            if job_id in self.present_jobs:
+                self.present_jobs.remove(job_id)
 
     def _all_ready(self):
         """
@@ -428,14 +432,14 @@ class StorageMonitor(Monitor):
         """
         logger.debug(f'ExecutorID {self.executor_id} - Starting Storage job monitor')
 
-        WAIT_DUR_SEC = self.monitoring_interval
+        wait_dur_sec = self.monitoring_interval
         prevoius_log = None
         log_time = 0
 
         while not self._all_ready():
-            time.sleep(WAIT_DUR_SEC)
-            WAIT_DUR_SEC = self.monitoring_interval
-            log_time += WAIT_DUR_SEC
+            time.sleep(wait_dur_sec)
+            wait_dur_sec = self.monitoring_interval
+            log_time += wait_dur_sec
 
             if not self.should_run:
                 break
@@ -446,7 +450,7 @@ class StorageMonitor(Monitor):
             # verify if there are new callids_done and reduce the sleep
             new_callids_done = callids_done - self.callids_done_processed_status
             if len(new_callids_done) > 0:
-                WAIT_DUR_SEC = 0.5
+                wait_dur_sec = self.monitoring_interval / 5
 
             # generate tokens and mark futures as running/done
             self._generate_tokens(callids_running, callids_done)
@@ -463,23 +467,30 @@ class JobMonitor:
         self.executor_id = executor_id
         self.internal_storage = internal_storage
         self.config = config
-        self.backend = self.config['lithops']['monitoring'].lower() if config else 'storage'
+        self.backend_type = self.config['lithops']['monitoring'].lower() if config else 'storage'
+        self.storage_backend = self.internal_storage.backend
         self.token_bucket_q = queue.Queue()
         self.monitor = None
         self.job_chunksize = {}
 
         self.MonitorClass = getattr(
             lithops.monitor,
-            f'{self.backend.capitalize()}Monitor'
+            f'{self.backend_type.capitalize()}Monitor'
         )
 
     def start(self, fs, job_id=None, chunksize=None, generate_tokens=False):
-        if self.backend == 'storage':
-            mi = self.config['lithops'].get('monitoring_interval', MONITORING_INTERVAL) \
-                if self.config else MONITORING_INTERVAL
-            bk_config = {'monitoring_interval': mi}
+        if self.backend_type == 'storage':
+            monitoring_interval = None
+            if self.config and 'lithops' in self.config:
+                monitoring_interval = self.config['lithops'].get('monitoring_interval')
+            if not monitoring_interval:
+                if self.storage_backend == 'localhost':
+                    monitoring_interval = MONITORING_INTERVAL_LH
+                else:
+                    monitoring_interval = MONITORING_INTERVAL
+            bk_config = {'monitoring_interval': monitoring_interval}
         else:
-            bk_config = self.config.get(self.backend)
+            bk_config = self.config.get(self.backend_type)
 
         if job_id:
             self.job_chunksize[job_id] = chunksize
