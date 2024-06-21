@@ -210,3 +210,8 @@ class LithopsScheduler:
                 self.profiling[i]['fn_init_offset'] += offset
                 if 'vm_init_offset' in self.profiling[i] and self.profiling[i]['vm_init_offset'] is not None:
                     self.profiling[i]['vm_init_offset'] += offset
+
+    def dump_to_csv(self):
+        import pandas as pd
+        df = pd.DataFrame(self.profiling)
+        df.to_csv('profiling.csv', index=False)

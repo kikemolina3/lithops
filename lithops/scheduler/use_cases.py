@@ -112,6 +112,33 @@ extreme_stages = [
 
 ]
 
+example_stages = [
+    {
+        'num_fn': 80,
+        'duration': 50
+    },
+    {
+        'num_fn': 200,
+        'duration': 25
+    },
+    {
+        'num_fn': 10,
+        'duration': 30
+    },
+    {
+        'num_fn': 60,
+        'duration': 150
+    },
+    {
+        'num_fn': 120,
+        'duration': 50
+    },
+    {
+        'num_fn': 20,
+        'duration': 30
+    },
+]
+
 variant_calling_stages = [
     {
         'input_data': 750,

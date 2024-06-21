@@ -23,4 +23,4 @@ if __name__ == "__main__":
         result = fexec.map(my_map_function, params).get_result()
         print(result)
     fexec.plot(dst='.')
-    fexec.dump_stats_to_csv("variant")
+    fexec.dump_stats_to_csv("variant-large")

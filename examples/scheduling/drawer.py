@@ -8,7 +8,7 @@ from matplotlib import colors as mcolors
 # Load the data
 worker_processes = 20
 memory_per_fn = 204.8
-file_base = "variant"
+file_base = "variant-large"
 stats = pd.read_csv(f'{file_base}/stats.csv')
 vms = pd.read_csv(f'{file_base}/vms.csv')
 profiling = pd.read_csv(f'{file_base}/profiling.csv')
@@ -58,10 +58,10 @@ for i, row in vms.iterrows():
     ax.add_patch(patches.Rectangle((start_time, i*worker_processes), end_time - start_time, height,
                                    color='green', alpha=0.1))
     # add red line of crosses for the end of the VM (but only in the right height) NOT axvline
-    ax.add_patch(patches.Rectangle((end_time, i*worker_processes), plot_width/50, height,
+    ax.add_patch(patches.Rectangle((end_time, i*worker_processes), plot_width/80, height,
                                    color='red', alpha=0.5, hatch='xxx'))
     # add blue line of crosses for the start of the VM (but only in the right height) NOT axvline
-    ax.add_patch(patches.Rectangle((start_time, i*worker_processes), plot_width/50, height,
+    ax.add_patch(patches.Rectangle((start_time, i*worker_processes), plot_width/80, height,
                                    color='dodgerblue', alpha=0.5, hatch='---'))
 
 
@@ -75,12 +75,12 @@ for i, row in stats.iterrows():
         height = 0
     start_time = row['worker_start_tstamp'] - host_job_create_tstamp
     end_time = row['worker_end_tstamp'] - host_job_create_tstamp
-    # random_jitter = random.Random(i).uniform(-3, 2)
-    random_jitter = 0
+    random_jitter = random.Random(i).uniform(-3, 2)
+    # random_jitter = 0
     end_time = end_time + random_jitter
     y = i
-    ax.add_patch(patches.Rectangle((start_time, 0.2 +  height), end_time - start_time, 0.6,
-                                   color=colors_list[get_my_stage(functions_per_stage, i)], alpha=0.4))
+    ax.add_patch(patches.Rectangle((start_time, 0.2 +  height), end_time - start_time, 0.5,
+                                   color=colors_list[get_my_stage(functions_per_stage, i)], alpha=0.2))
     ax.text(start_time, height, 'x', fontsize=10,  ha='center', va='center',color=colors_list[get_my_stage(functions_per_stage, i)])
     height += 1
 
@@ -104,5 +104,6 @@ plt.figtext(0.7, 0.15, f'Total cost = 0.0321$', ha='center', va='center')
 plt.figtext(0.7, 0.1, f'FaaS cost = 0.456$', ha='center', va='center')
 plt.figtext(0.7, 0.05, f'Number of evictions = 0', ha='center', va='center')
 
-
 plt.show()
+
+# save to pdf

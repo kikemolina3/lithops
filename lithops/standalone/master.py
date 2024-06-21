@@ -740,7 +740,6 @@ def handle_job(job_payload):
         task_payload = copy.deepcopy(job_payload)
         task_payload['call_ids'] = [call_id]
         task_payload['data_byte_ranges'] = [dbr[int(call_id)]]
-        logger.info("flag1")
         queue_name = get_my_worker_queue_name(int(call_id), job_payload["worker_processes"])
         logger.info(f"Submitting task with call_id: {call_id} to {queue_name}")
         redis_client.lpush(queue_name, json.dumps(task_payload))
