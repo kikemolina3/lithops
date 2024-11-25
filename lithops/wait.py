@@ -278,6 +278,10 @@ def _get_executor_data(fs, exec_data, download_results, throw_except, threadpool
     not_done_call_ids = set([(f.executor_id, f.job_id, f.call_id) for f in not_done_futures])
     new_callids_done = not_done_call_ids.intersection(callids_done)
 
+    for _ in new_callids_done:
+        ### Extrae call for EXTRACT TASKA-C use case
+        pyextrae.eventandcounters(9100000, 2)
+
     fs_to_wait_on = []
     for f in exec_data.futures:
         if (f.executor_id, f.job_id, f.call_id) in new_callids_done:
