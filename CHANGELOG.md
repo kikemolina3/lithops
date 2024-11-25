@@ -1,15 +1,23 @@
 # Changelog
 
-## [v3.5.1.dev0]
+## [v3.5.2.dev0]
 
 ### Added
 - 
 
 ### Changed
--
+- 
 
 ### Fixed
-- 
+- [Standalone] Fix issue causing worker to stop prematurely in Consume mode
+
+
+## [v3.5.1]
+
+### Fixed
+- [Core] Fix issue in "if self._call_output in future.py" for objects with ambiguous truth values
+- [Standalone] Consume execution mode failing to run the installation script thus failing all the jobs
+- [Azure VMs] Consume execution mode failing to execute jobs
 
 
 ## [v3.5.0]
