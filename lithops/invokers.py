@@ -372,6 +372,9 @@ class FaaSInvoker(Invoker):
             del payload['data_byte_ranges']
             payload['data_byte_strs'] = [job.data_byte_strs[int(call_id)] for call_id in call_ids]
 
+        pythonpath = os.environ.get('PYTHONPATH')
+        print(f"PYTHONPATH: {pythonpath}")
+
         ### Extrae call for EXTRACT TASKA-C use case
         import pyextrae.multiprocessing as pyextrae
         pyextrae.eventandcounters(9100000, 2)
