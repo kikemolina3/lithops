@@ -373,6 +373,7 @@ class FaaSInvoker(Invoker):
             payload['data_byte_strs'] = [job.data_byte_strs[int(call_id)] for call_id in call_ids]
 
         ### Extrae call for EXTRACT TASKA-C use case
+        import pyextrae.multiprocessing as pyextrae
         pyextrae.eventandcounters(9100000, 2)
 
         # do the invocation
