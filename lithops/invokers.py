@@ -377,7 +377,7 @@ class FaaSInvoker(Invoker):
 
         ### Extrae call for EXTRACT TASKA-C use case
         import pyextrae.multiprocessing as pyextrae
-        pyextrae.eventandcounters(9100000, 2)
+        pyextrae.eventandcounters(9100000 + int(call_ids_range[0]), 2)
 
         # do the invocation
         start = time.time()
