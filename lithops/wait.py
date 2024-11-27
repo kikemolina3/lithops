@@ -282,7 +282,7 @@ def _get_executor_data(fs, exec_data, download_results, throw_except, threadpool
 
     for call_id in new_callids_done:
         ### Extrae call for EXTRACT TASKA-C use case
-        pyextrae.eventandcounters(9100000 + int(call_id), 0)
+        pyextrae.eventandcounters(9100000 + int(call_id[0]), 0)
 
     fs_to_wait_on = []
     for f in exec_data.futures:
