@@ -14,7 +14,6 @@
 # limitations under the License.
 #
 
-import pyextrae.multiprocessing as pyextrae
 import os
 import sys
 import time
@@ -376,6 +375,7 @@ class FaaSInvoker(Invoker):
         pythonpath = os.environ.get('PYTHONPATH')
         print(f"PYTHONPATH: {pythonpath}")
 
+        import pyextrae.multiprocessing as pyextrae
         ### Extrae call for EXTRACT TASKA-C use case
         print("EXTRAE: Starting call (2): ", 9100000 + int(call_ids_range[0]))
         pyextrae.eventandcounters(9100000 + int(call_ids_range[0]), 2)

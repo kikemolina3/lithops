@@ -14,7 +14,6 @@
 # limitations under the License.
 #
 
-import pyextrae.multiprocessing as pyextrae
 import signal
 import logging
 import math
@@ -279,6 +278,7 @@ def _get_executor_data(fs, exec_data, download_results, throw_except, threadpool
     not_done_call_ids = set([(f.executor_id, f.job_id, f.call_id) for f in not_done_futures])
     new_callids_done = not_done_call_ids.intersection(callids_done)
 
+    import pyextrae.multiprocessing as pyextrae
     for call_id in new_callids_done:
         ### Extrae call for EXTRACT TASKA-C use case
         print("EXTRAE: Ending call (0): ", 9100000 + int(call_id[2]))
