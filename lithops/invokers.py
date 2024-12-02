@@ -262,6 +262,12 @@ class BatchInvoker(Invoker):
         """
         payload = self._create_payload(job)
         payload['call_ids'] = ["{:05d}".format(i) for i in range(job.total_calls)]
+        call_ids = [i for i in range(job.total_calls)]
+
+        import pyextrae.multiprocessing as pyextrae
+        for call_id in call_ids:
+            print("EXTRAE: Starting call (2): ", 9100000 + int(call_id))
+            pyextrae.eventandcounters(9100000 + call_id, 2)
 
         start = time.time()
         activation_id = self.compute_handler.invoke(payload)
