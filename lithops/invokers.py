@@ -372,14 +372,6 @@ class FaaSInvoker(Invoker):
             del payload['data_byte_ranges']
             payload['data_byte_strs'] = [job.data_byte_strs[int(call_id)] for call_id in call_ids]
 
-        pythonpath = os.environ.get('PYTHONPATH')
-        print(f"PYTHONPATH: {pythonpath}")
-
-        import pyextrae.multiprocessing as pyextrae
-        ### Extrae call for EXTRACT TASKA-C use case
-        print("EXTRAE: Starting call (2): ", 9100000 + int(call_ids_range[0]))
-        pyextrae.eventandcounters(9100000 + int(call_ids_range[0]), 2)
-
         # do the invocation
         start = time.time()
         activation_id = self.compute_handler.invoke(payload)
@@ -459,9 +451,14 @@ class FaaSInvoker(Invoker):
             def _callback(future):
                 future.result()
 
+            ### Extrae call for EXTRACT TASKA-C use case
+            import pyextrae.multiprocessing as pyextrae
+
             invoke_futures = []
             for call_ids_range in iterchunks(callids_to_invoke_direct, job.chunksize):
                 future = self.executor.submit(self._invoke_task, job, call_ids_range)
+                print("EXTRAE: Starting call (2): ", 9100000 + int(call_ids_range[0]))
+                pyextrae.eventandcounters(9100000 + int(call_ids_range[0]), 2)
                 future.add_done_callback(_callback)
                 invoke_futures.append(future)
 
