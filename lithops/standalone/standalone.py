@@ -257,7 +257,7 @@ class StandaloneHandler:
                 job_payload['worker_processes'],
                 job_payload['runtime_name'],
             )
-            total_memory = sum([w["memory"] for w in workers])
+            total_memory = sum([w[0] for w in workers])
             logger.debug(
                 f"Found {total_memory} free memory attached to {self.backend.master}"
             )
@@ -266,7 +266,7 @@ class StandaloneHandler:
                 workers_to_create = required_memory - total_memory
                 logger.debug(f"Going to create {workers_to_create} new workers")
                 new_workers = create_workers(workers_to_create)
-                total_memory += sum([w["memory"] for w in new_workers])
+                total_memory += sum([w.memory for w in new_workers])
 
         if total_memory == 0:
             raise Exception("It was not possible to create any worker")

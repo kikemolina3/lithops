@@ -684,6 +684,7 @@ class AWSEC2Backend:
                 instance_data=instance_data,
             )
             worker.instance_type = instance_data["InstanceType"]
+            worker.memory = self.instance_types[worker.instance_type] * 2048
             self.workers.append(worker)
 
     def _set_user_data(self):
@@ -1143,6 +1144,8 @@ class EC2Instance:
             'password': self.config['ssh_password'],
             'key_filename': self.config.get('ssh_key_filename', '~/.ssh/id_rsa')
         }
+
+        self.memory = None
 
     def __str__(self):
         ip = self.public_ip if self.public else self.private_ip

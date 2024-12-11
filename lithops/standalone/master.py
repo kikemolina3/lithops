@@ -179,6 +179,7 @@ def get_workers():
         if is_worker_free(worker_data['private_ip']):
             free_workers.append(
                 (
+                    worker_data['worker_processes'] * 2048,
                     worker_data['name'],
                     worker_data['private_ip'],
                     worker_data['instance_id'],
