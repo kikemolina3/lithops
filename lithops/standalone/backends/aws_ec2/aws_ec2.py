@@ -97,6 +97,9 @@ class AWSEC2Backend:
         self.master = None
         self.workers = []
 
+        self.launch_template_name = "lithops-launch-template"
+        self.worker_user_data = None
+
         msg = COMPUTE_CLI_MSG.format('AWS EC2')
         logger.info(f"{msg} - Region: {self.region_name}")
 
@@ -552,6 +555,7 @@ class AWSEC2Backend:
             self._create_master_instance()
 
         elif self.mode in [StandaloneMode.CREATE.value, StandaloneMode.REUSE.value]:
+            self._set_user_data()
 
             # Create the VPC if not exists
             self._create_vpc()
@@ -600,10 +604,106 @@ class AWSEC2Backend:
                 # 'nat_gateway_id': self.config['nat_gateway_id'],
                 # 'private_rtb_id': self.config['private_rtb_id'],
                 'public_rtb_id': self.config['public_rtb_id'],
-                'instance_types': self.instance_types
+                'instance_types': self.instance_types,
+                'worker_user_data': self.worker_user_data,
             }
 
         self._dump_ec2_data()
+
+    def create_launch_template(self):
+        try:
+            self.ec2_client.describe_launch_templates(
+                LaunchTemplateNames=[self.launch_template_name]
+            )
+        except ClientError as e:
+            if (
+                    e.response["Error"]["Code"]
+                    == "InvalidLaunchTemplateName.NotFoundException"
+            ):
+                self.ec2_client.create_launch_template(
+                    LaunchTemplateName=self.launch_template_name,
+                    VersionDescription="My launch template for Lithops workers",
+                    LaunchTemplateData={
+                        "ImageId": self.config["target_ami"],
+                        "KeyName": self.config["ssh_key_filename"],
+                        "UserData": self.worker_user_data,
+                        "IamInstanceProfile": {"Name": self.config["instance_role"]},
+                    },
+                )
+            else:
+                raise e
+
+    def create_fleet(self, memory_to_create):
+        strategy = "capacity-price-optimized"  # TODO-KMU: make this configurable
+
+        self.create_launch_template()
+
+        response = self.ec2_client.create_fleet(
+            SpotOptions={
+                "AllocationStrategy": strategy,
+                "SingleAvailabilityZone": False,
+            },
+            LaunchTemplateConfigs=[
+                {
+                    "LaunchTemplateSpecification": {
+                        "LaunchTemplateName": self.launch_template_name,
+                        "Version": "$Latest",
+                    },
+                    "Overrides": [
+                        {
+                            "InstanceRequirements": {
+                                "VCpuCount": {"Min": 0},  # no min
+                                "MemoryMiB": {
+                                    "Min": 4096
+                                           * 2,  # For now, we only use 4GB instances minimum
+                                },
+                                "MemoryGiBPerVCpu": {  # forces compute-optimized instances
+                                    "Min": 2,
+                                    "Max": 2,
+                                },
+                            }
+                        }
+                    ],
+                }
+            ],
+            TargetCapacitySpecification={
+                "TotalTargetCapacity": memory_to_create,
+                "DefaultTargetCapacityType": "spot",
+                "TargetCapacityUnitType": "memory-mib",
+            },
+            Type="instant",
+        )
+
+        # create EC2 instances for each instance in the fleet
+        for instance_data in response["Instances"]:
+            worker = EC2Instance(
+                instance_data["InstanceId"],
+                self.config,
+                self.ec2_client,
+                public=False,
+                instance_data=instance_data,
+            )
+            worker.instance_type = instance_data["InstanceType"]
+            self.workers.append(worker)
+
+    def _set_user_data(self):
+        """
+        Set the user data for the VM worker instances
+        """
+        user = self.config["ssh_username"]
+        token = self.config["ssh_password"]
+        pub_key = f'{self.cache_dir}/{self.ec2_data["master_name"]}-id_rsa.pub'
+        if os.path.isfile(pub_key):
+            with open(pub_key, "r") as pk:
+                pk_data = pk.read().strip()
+            worker_user_data = CLOUD_CONFIG_WORKER_PK.format(user, pk_data, token)
+            self.ec2_data["worker_user_data"] = worker_user_data
+        else:
+            logger.error(f"Unable to locate {pub_key}")
+            self.ec2_data["worker_user_data"] = CLOUD_CONFIG_WORKER_PK.format(
+                user, token
+            )
+        self.worker_user_data = self.ec2_data["worker_user_data"]
 
     def build_image(self, image_name, script_file, overwrite, include, extra_args=[]):
         """
@@ -1012,7 +1112,7 @@ class AWSEC2Backend:
 
 class EC2Instance:
 
-    def __init__(self, name, ec2_config, ec2_client=None, public=False):
+    def __init__(self, name, ec2_config, ec2_client=None, public=False, instance_data=None):
         """
         Initialize a EC2Instance instance
         VMs can have master role, this means they will have a public IP address
@@ -1029,8 +1129,8 @@ class EC2Instance:
         self.public = public
 
         self.ssh_client = None
-        self.instance_id = None
-        self.instance_data = None
+        self.instance_data = instance_data
+        self.instance_id = instance_data["InstanceId"] if instance_data else None
         self.private_ip = None
         self.public_ip = '0.0.0.0'
         self.fast_io = self.config.get('fast_io', False)

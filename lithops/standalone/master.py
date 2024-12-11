@@ -161,20 +161,16 @@ def get_workers():
     if payload and not isinstance(payload, dict):
         return error('The action did not receive a dictionary as an argument.')
 
-    worker_instance_type = payload['worker_instance_type']
-    worker_processes = payload['worker_processes']
     runtime_name = payload['runtime_name']
 
     active_workers = []
 
     for worker in workers:
         worker_data = redis_client.hgetall(worker)
-        if worker_data['instance_type'] == worker_instance_type \
-           and worker_data['runtime'] == runtime_name \
-           and int(worker_data['worker_processes']) == int(worker_processes):
+        if worker_data['runtime'] == runtime_name:
             active_workers.append(worker_data)
 
-    worker_type = f'{worker_instance_type}-{worker_processes}-{runtime_name}'
+    worker_type = f'{runtime_name}'
     logger.debug(f'Workers for {worker_type}: {len(active_workers)}')
 
     free_workers = []
@@ -551,9 +547,7 @@ def run():
     elif exec_mode == StandaloneMode.CREATE:
         queue_name = f'wq:{job_key}'.lower()
     elif exec_mode == StandaloneMode.REUSE:
-        worker_it = job_payload['worker_instance_type']
-        worker_wp = job_payload['worker_processes']
-        queue_name = f'wq:{worker_it}-{worker_wp}-{runtime_name.replace("/", "-")}'.lower()
+        queue_name = f'wq:{runtime_name.replace("/", "-")}'.lower()
 
     Thread(target=handle_job, args=(job_payload, queue_name)).start()
     Thread(target=handle_workers, args=(job_payload, workers, queue_name)).start()

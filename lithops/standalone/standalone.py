@@ -40,7 +40,7 @@ from lithops.standalone.utils import (
     StandaloneMode,
     LithopsValidationError,
     get_host_setup_script,
-    get_master_setup_script
+    get_master_setup_script,
 )
 from lithops.version import __version__
 
@@ -57,7 +57,7 @@ class StandaloneHandler:
         self.config = standalone_config
         self.backend_name = self.config['backend']
         self.start_timeout = self.config['start_timeout']
-        self.exec_mode = StandaloneMode[self.config['exec_mode'].upper()]
+        self.exec_mode = StandaloneMode.REUSE
         self.is_lithops_worker = is_lithops_worker()
 
         module_location = f'lithops.standalone.backends.{self.backend_name}'
@@ -210,49 +210,34 @@ class StandaloneHandler:
         job_id = job_payload['job_id']
         total_calls = job_payload['total_calls']
 
+        # Dummy values (not used)
+        required_workers = 0
+        job_payload["worker_processes"] = "AUTO"
+
         if self.exec_mode == StandaloneMode.CONSUME:
             logger.debug(
-                f'ExecutorID {executor_id} | JobID {job_id} - Worker processes: '
+                f"ExecutorID {executor_id} | JobID {job_id} - Worker processes: "
                 f'{job_payload["worker_processes"]}'
             )
         else:
-            worker_instance_type = self.backend.get_worker_instance_type()
-            worker_processes = self.backend.get_worker_cpu_count()
-
-            job_payload['worker_instance_type'] = worker_instance_type
-
-            if job_payload['worker_processes'] == "AUTO":
-                job_payload['worker_processes'] = worker_processes
-                job_payload['config'][self.backend_name]['worker_processes'] = worker_processes
-
-            wp = job_payload['worker_processes']
-            max_workers = job_payload['max_workers']
-            required_workers = min(max_workers, total_calls // wp + (total_calls % wp > 0))
+            fn_memory = 2048
+            required_memory = total_calls * fn_memory
 
             logger.debug(
-                f'ExecutorID {executor_id} | JobID {job_id} - Instance Type: {worker_instance_type} - Worker '
-                f'processes: {job_payload["worker_processes"]} - Required Workers: {required_workers}'
+                f"ExecutorID {executor_id} | JobID {job_id} - Num functions: {total_calls} - "
+                f"Required memory: {required_memory} MB"
             )
 
-        def create_workers(workers_to_create):
+        def create_workers(memory_to_create):
             current_workers_old = set(self.backend.workers)
-            futures = []
-            with cf.ThreadPoolExecutor(min(workers_to_create, 48)) as ex:
-                for vm_n in range(workers_to_create):
-                    worker_id = f"{executor_id}-{job_id}-{vm_n}"
-                    worker_hash = hashlib.sha1(worker_id.encode("utf-8")).hexdigest()[:8]
-                    name = f'lithops-worker-{worker_hash}'
-                    futures.append(ex.submit(self.backend.create_worker, name))
 
-            for future in cf.as_completed(futures):
-                try:
-                    future.result()
-                except Exception:
-                    pass
+            self.backend.create_fleet(memory_to_create)
 
             current_workers_new = set(self.backend.workers)
             new_workers = current_workers_new - current_workers_old
-            logger.debug(f"Total worker VM instances created: {len(new_workers)}/{workers_to_create}")
+            logger.debug(
+                f"Total worker VM instances created: {len(new_workers)}/{workers_to_create}"
+            )
 
             return list(new_workers)
 
@@ -272,20 +257,24 @@ class StandaloneHandler:
                 job_payload['worker_processes'],
                 job_payload['runtime_name'],
             )
-            total_workers = len(workers)
-            logger.debug(f"Found {total_workers} free workers connected to {self.backend.master}")
-            if total_workers < required_workers:
+            total_memory = sum([w["memory"] for w in workers])
+            logger.debug(
+                f"Found {total_memory} free memory attached to {self.backend.master}"
+            )
+            if total_memory < required_memory:
                 # create missing delta of workers
-                workers_to_create = required_workers - total_workers
-                logger.debug(f'Going to create {workers_to_create} new workers')
+                workers_to_create = required_memory - total_memory
+                logger.debug(f"Going to create {workers_to_create} new workers")
                 new_workers = create_workers(workers_to_create)
-                total_workers += len(new_workers)
+                total_memory += sum([w["memory"] for w in new_workers])
 
-        if total_workers == 0:
-            raise Exception('It was not possible to create any worker')
+        if total_memory == 0:
+            raise Exception("It was not possible to create any worker")
 
-        logger.debug(f'ExecutorID {executor_id} | JobID {job_id} - Going to run '
-                     f'{total_calls} activations in {total_workers} workers')
+        logger.debug(
+            f"ExecutorID {executor_id} | JobID {job_id} - Going to run "
+            f"{total_calls} activations in {total_memory} memory"
+        )
 
         logger.debug(f"Checking if {self.backend.master} is ready")
         if not self._is_master_service_ready():
