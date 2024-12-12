@@ -33,7 +33,6 @@ from lithops.config import load_yaml_config, dump_yaml_config
 from lithops.standalone.utils import CLOUD_CONFIG_WORKER, CLOUD_CONFIG_WORKER_PK, StandaloneMode, get_host_setup_script
 from lithops.standalone import LithopsValidationError
 
-
 logger = logging.getLogger(__name__)
 
 INSTANCE_STX_TIMEOUT = 180
@@ -98,7 +97,6 @@ class AWSEC2Backend:
         self.workers = []
 
         self.launch_template_name = "lithops-launch-template"
-        self.worker_user_data = None
 
         msg = COMPUTE_CLI_MSG.format('AWS EC2')
         logger.info(f"{msg} - Region: {self.region_name}")
@@ -555,8 +553,6 @@ class AWSEC2Backend:
             self._create_master_instance()
 
         elif self.mode in [StandaloneMode.CREATE.value, StandaloneMode.REUSE.value]:
-            self._set_user_data()
-
             # Create the VPC if not exists
             self._create_vpc()
 
@@ -566,7 +562,7 @@ class AWSEC2Backend:
             # Create the Subnet if not exists
             self._create_subnets()
             # Create the internet gateway if not exists
-            self. _create_internet_gateway()
+            self._create_internet_gateway()
             # Create the NAT gateway
             # self._create_nat_gateway()
             # Create routing tables
@@ -605,12 +601,17 @@ class AWSEC2Backend:
                 # 'private_rtb_id': self.config['private_rtb_id'],
                 'public_rtb_id': self.config['public_rtb_id'],
                 'instance_types': self.instance_types,
-                'worker_user_data': self.worker_user_data,
             }
 
         self._dump_ec2_data()
 
     def create_launch_template(self):
+        pub_key = f'{self.cache_dir}/{self.master.name}-id_rsa.pub'
+        user = self.config['ssh_username']
+        if os.path.isfile(pub_key):
+            with open(pub_key, 'r') as pk:
+                pk_data = pk.read().strip()
+        worker_user_data = CLOUD_CONFIG_WORKER_PK.format(user, pk_data)
         try:
             self.ec2_client.describe_launch_templates(
                 LaunchTemplateNames=[self.launch_template_name]
@@ -625,16 +626,24 @@ class AWSEC2Backend:
                     VersionDescription="My launch template for Lithops workers",
                     LaunchTemplateData={
                         "ImageId": self.config["target_ami"],
-                        "KeyName": self.config["ssh_key_filename"],
-                        "UserData": self.worker_user_data,
+                        "KeyName": self.ec2_data["ssh_key_name"],
+                        "UserData": base64.b64encode(worker_user_data.encode('utf-8')).decode('utf-8'),
                         "IamInstanceProfile": {"Name": self.config["instance_role"]},
+                        "NetworkInterfaces": [
+                            {
+                                "AssociatePublicIpAddress": True,
+                                "DeviceIndex": 0,
+                                "Groups": [self.config["security_group_id"]],
+                                "SubnetId": self.config["public_subnet_id"],
+                            }
+                        ],
                     },
                 )
             else:
                 raise e
 
     def create_fleet(self, memory_to_create):
-        strategy = "capacity-price-optimized"  # TODO-KMU: make this configurable
+        strategy = "price-capacity-optimized"  # TODO-KMU: make this configurable
 
         self.create_launch_template()
 
@@ -654,8 +663,7 @@ class AWSEC2Backend:
                             "InstanceRequirements": {
                                 "VCpuCount": {"Min": 0},  # no min
                                 "MemoryMiB": {
-                                    "Min": 4096
-                                           * 2,  # For now, we only use 4GB instances minimum
+                                    "Min": 4096 * 2,  # For now, we only use 4GB instances minimum
                                 },
                                 "MemoryGiBPerVCpu": {  # forces compute-optimized instances
                                     "Min": 2,
@@ -674,37 +682,20 @@ class AWSEC2Backend:
             Type="instant",
         )
 
-        # create EC2 instances for each instance in the fleet
-        for instance_data in response["Instances"]:
+        instance_ids = [instance_id for instance in response['Instances'] for instance_id in instance['InstanceIds']]
+        for instance_id in instance_ids:
+            instance_name = f"lithops-worker-{instance_id[-6:]}"
             worker = EC2Instance(
-                instance_data["InstanceId"],
+                instance_name,
                 self.config,
                 self.ec2_client,
                 public=False,
-                instance_data=instance_data,
+                instance_id=instance_id,
             )
-            worker.instance_type = instance_data["InstanceType"]
             worker.memory = self.instance_types[worker.instance_type] * 2048
+            worker.ssh_credentials.pop('password')
+            worker.ssh_credentials['key_filename'] = '~/.ssh/lithops_id_rsa'
             self.workers.append(worker)
-
-    def _set_user_data(self):
-        """
-        Set the user data for the VM worker instances
-        """
-        user = self.config["ssh_username"]
-        token = self.config["ssh_password"]
-        pub_key = f'{self.cache_dir}/{self.ec2_data["master_name"]}-id_rsa.pub'
-        if os.path.isfile(pub_key):
-            with open(pub_key, "r") as pk:
-                pk_data = pk.read().strip()
-            worker_user_data = CLOUD_CONFIG_WORKER_PK.format(user, pk_data, token)
-            self.ec2_data["worker_user_data"] = worker_user_data
-        else:
-            logger.error(f"Unable to locate {pub_key}")
-            self.ec2_data["worker_user_data"] = CLOUD_CONFIG_WORKER_PK.format(
-                user, token
-            )
-        self.worker_user_data = self.ec2_data["worker_user_data"]
 
     def build_image(self, image_name, script_file, overwrite, include, extra_args=[]):
         """
@@ -1113,7 +1104,7 @@ class AWSEC2Backend:
 
 class EC2Instance:
 
-    def __init__(self, name, ec2_config, ec2_client=None, public=False, instance_data=None):
+    def __init__(self, name, ec2_config, ec2_client=None, public=False, instance_id=None):
         """
         Initialize a EC2Instance instance
         VMs can have master role, this means they will have a public IP address
@@ -1130,8 +1121,13 @@ class EC2Instance:
         self.public = public
 
         self.ssh_client = None
-        self.instance_data = instance_data
-        self.instance_id = instance_data["InstanceId"] if instance_data else None
+        self.instance_data = None
+        self.instance_id = instance_id
+        self.memory = None
+        self.instance_type = None
+        if self.instance_id:
+            self.get_instance_data()
+            self.instance_type = self.instance_data['InstanceType']
         self.private_ip = None
         self.public_ip = '0.0.0.0'
         self.fast_io = self.config.get('fast_io', False)
@@ -1142,7 +1138,7 @@ class EC2Instance:
         self.ssh_credentials = {
             'username': self.config['ssh_username'],
             'password': self.config['ssh_password'],
-            'key_filename': self.config.get('ssh_key_filename', '~/.ssh/id_rsa')
+            'key_filename': self.config.get('ssh_key_filename', '~/.ssh/lithops_id_rsa')
         }
 
         self.memory = None
@@ -1356,8 +1352,16 @@ class EC2Instance:
         Returns the instance information
         """
         if self.instance_id:
-            res = self.ec2_client.describe_instances(InstanceIds=[self.instance_id])
-            reserv = res['Reservations']
+            while True:
+                try:
+                    res = self.ec2_client.describe_instances(InstanceIds=[self.instance_id])
+                    reserv = res['Reservations']
+                    break
+                except botocore.exceptions.ClientError as e:
+                    if e.response['Error']['Code'] == 'InvalidInstanceID.NotFound':
+                        time.sleep(1)
+                    else:
+                        raise e
         else:
             filters = [{'Name': 'tag:Name', 'Values': [self.name]}]
             res = self.ec2_client.describe_instances(Filters=filters)

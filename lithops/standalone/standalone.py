@@ -253,8 +253,8 @@ class StandaloneHandler:
 
         elif self.exec_mode == StandaloneMode.REUSE:
             workers = self._get_workers_on_master(
-                job_payload['worker_instance_type'],
-                job_payload['worker_processes'],
+                None,
+                None,
                 job_payload['runtime_name'],
             )
             total_memory = sum([w[0] for w in workers])
@@ -264,7 +264,7 @@ class StandaloneHandler:
             if total_memory < required_memory:
                 # create missing delta of workers
                 workers_to_create = required_memory - total_memory
-                logger.debug(f"Going to create {workers_to_create} new workers")
+                # logger.debug(f"Going to create {workers_to_create} new workers")
                 new_workers = create_workers(workers_to_create)
                 total_memory += sum([w.memory for w in new_workers])
 
@@ -296,6 +296,9 @@ class StandaloneHandler:
              'instance_type': inst.instance_type}
             for inst in new_workers
         ]
+
+        logger.info("***Propagating job to master VM***")
+        logger.info(job_payload)
 
         # invoke Job
         self._make_request('POST', 'job/run', job_payload)

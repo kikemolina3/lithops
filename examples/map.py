@@ -11,13 +11,12 @@ import time
 
 def my_map_function(id, x):
     print(f"I'm activation number {id}")
-    time.sleep(5)
+    time.sleep(20)
     return x + 7
 
 
 if __name__ == "__main__":
-    iterdata = [1, 2, 3, 4]
+    iterdata = list(range(4))
     fexec = lithops.FunctionExecutor()
-    fexec.map(my_map_function, range(2))
-    fexec.map(my_map_function, range(6))
+    fexec.map(my_map_function, iterdata)
     print(fexec.get_result())
