@@ -64,12 +64,9 @@ class AWSEC2Backend:
         self.cache_dir = os.path.join(CACHE_DIR, self.name)
         self.cache_file = os.path.join(self.cache_dir, f'{self.region_name}_{suffix}_data')
 
-        self.vpc_data_type = 'provided' if 'vpc_id' in self.config else 'created'
         self.ssh_data_type = 'provided' if 'ssh_key_name' in self.config else 'created'
 
         self.ec2_data = {}
-        self.vpc_name = None
-        self.vpc_key = None
 
         self.instance_types = {}
 
@@ -116,228 +113,11 @@ class AWSEC2Backend:
         if self.ec2_data:
             logger.debug(f'EC2 data loaded from {self.cache_file}')
 
-        if 'vpc_id' in self.ec2_data:
-            self.vpc_key = self.ec2_data['vpc_id'][-6:]
-            self.vpc_name = self.ec2_data['vpc_name']
-
     def _dump_ec2_data(self):
         """
         Dumps EC2 data to local cache
         """
         dump_yaml_config(self.cache_file, self.ec2_data)
-
-    def _delete_vpc_data(self):
-        """
-        Deletes the vpc data file
-        """
-        if os.path.exists(self.cache_file):
-            os.remove(self.cache_file)
-
-    def _create_vpc(self):
-        """
-        Creates a new VPC
-        """
-        if 'vpc_id' in self.config:
-            return
-
-        if 'vpc_id' in self.ec2_data:
-            logger.debug(f'Using VPC {self.ec2_data["vpc_name"]}')
-            vpcs_info = self.ec2_client.describe_vpcs(VpcIds=[self.ec2_data['vpc_id']])
-            if len(vpcs_info) > 0:
-                self.config['vpc_id'] = self.ec2_data['vpc_id']
-                return
-
-        self.vpc_name = self.config.get('vpc_name', f'lithops-vpc-{self.user_key}-{str(uuid.uuid4())[-6:]}')
-        logger.debug(f'Setting VPC name to {self.vpc_name}')
-
-        assert re.match("^[a-z0-9-:-]*$", self.vpc_name), \
-            f'VPC name "{self.vpc_name}" not valid'
-
-        filter = [{'Name': 'tag:Name', 'Values': [self.vpc_name]}]
-        vpcs_info = self.ec2_client.describe_vpcs(Filters=filter)['Vpcs']
-        if len(vpcs_info) > 0:
-            self.config['vpc_id'] = vpcs_info[0]['VpcId']
-
-        if 'vpc_id' not in self.config:
-            logger.debug(f'Creating VPC {self.vpc_name}')
-            response = self.ec2_client.create_vpc(CidrBlock='10.0.0.0/16')
-            tags = [{"Key": "Name", "Value": self.vpc_name}]
-            self.ec2_client.create_tags(Resources=[response['Vpc']['VpcId']], Tags=tags)
-
-            self.config['vpc_id'] = response['Vpc']['VpcId']
-
-    def _create_subnets(self):
-        """
-        Creates a public and a private subnets
-        """
-        if 'public_subnet_id' in self.config:
-            return
-
-        if 'public_subnet_id' in self.ec2_data:
-            sg_info = self.ec2_client.describe_subnets(
-                SubnetIds=[self.ec2_data['public_subnet_id']]
-            )
-            if len(sg_info) > 0:
-                self.config['public_subnet_id'] = self.ec2_data['public_subnet_id']
-
-        if 'public_subnet_id' not in self.config:
-            logger.debug(f'Creating new public subnet in VPC {self.vpc_name}')
-            response = self.ec2_client.create_subnet(
-                CidrBlock='10.0.1.0/24', VpcId=self.config['vpc_id'],
-            )
-            public_subnet_id = response['Subnet']['SubnetId']
-            self.config['public_subnet_id'] = public_subnet_id
-
-        # if 'private_subnet_id' in self.ec2_data:
-        #     sg_info = self.ec2_client.describe_subnets(
-        #         SubnetIds=[self.ec2_data['private_subnet_id']]
-        #     )
-        #     if len(sg_info) > 0:
-        #         self.config['private_subnet_id'] = self.ec2_data['private_subnet_id']
-        #
-        # if 'private_subnet_id' not in self.config:
-        #     logger.debug(f'Creating new private subnet in VPC {self.vpc_name}')
-        #     response = self.ec2_client.create_subnet(
-        #         CidrBlock='10.0.2.0/24', VpcId=self.config['vpc_id']
-        #     )
-        #     private_subnet_id = response['Subnet']['SubnetId']
-        #     self.config['private_subnet_id'] = private_subnet_id
-
-    def _create_internet_gateway(self):
-        """
-        Creates a new internet gateway
-        """
-        if 'internet_gateway_id' in self.config:
-            return
-
-        if 'internet_gateway_id' in self.ec2_data:
-            ig_info = self.ec2_client.describe_internet_gateways(
-                InternetGatewayIds=[self.ec2_data['internet_gateway_id']]
-            )
-            if len(ig_info) > 0:
-                self.config['internet_gateway_id'] = self.ec2_data['internet_gateway_id']
-                return
-
-        response = self.ec2_client.describe_internet_gateways()
-        for ig in response['InternetGateways']:
-            if ig['Attachments'][0]['VpcId'] == self.config['vpc_id']:
-                self.config['internet_gateway_id'] = ig['InternetGatewayId']
-
-        if 'internet_gateway_id' not in self.config:
-            # Create and Attach the Internet Gateway
-            logger.debug(f'Creating Internet Gateway in VPC {self.vpc_name}')
-            response = self.ec2_client.create_internet_gateway()
-            internet_gateway_id = response['InternetGateway']['InternetGatewayId']
-            self.ec2_client.attach_internet_gateway(
-                VpcId=self.config['vpc_id'], InternetGatewayId=internet_gateway_id
-            )
-            self.config['internet_gateway_id'] = internet_gateway_id
-
-    def _create_nat_gateway(self):
-        """
-        Creates a new internet gateway
-        """
-        if 'nat_gateway_id' in self.config:
-            return
-
-        if 'nat_gateway_id' in self.ec2_data:
-            ig_info = self.ec2_client.describe_nat_gateways(
-                NatGatewayIds=[self.ec2_data['nat_gateway_id']]
-            )
-            if len(ig_info) > 0:
-                self.config['nat_gateway_id'] = self.ec2_data['nat_gateway_id']
-                return
-
-        response = self.ec2_client.describe_nat_gateways()
-        for ng in response['NatGateways']:
-            if ng['SubnetId'] == self.config['public_subnet_id']:
-                self.config['nat_gateway_id'] = ng['NatGatewayId']
-
-        if 'nat_gateway_id' not in self.config:
-            logger.debug(f'Creating NAT Gateway in VPC {self.vpc_name}')
-            # Create an Elastic IP address for the NAT Gateway
-            # Create the NAT gateway can take up to 2 minutes
-            # TODO: Reuse Elastic IP adress if available
-            eip_resp = self.ec2_client.allocate_address(Domain='vpc')
-            allocation_id = eip_resp['AllocationId']
-
-            # Create a NAT Gateway
-            nat_gateway_resp = self.ec2_client.create_nat_gateway(
-                SubnetId=self.config['public_subnet_id'],
-                AllocationId=allocation_id
-            )
-            nat_gateway_id = nat_gateway_resp['NatGateway']['NatGatewayId']
-            self.config['nat_gateway_id'] = nat_gateway_id
-
-            self.ec2_client.get_waiter('nat_gateway_available').wait(
-                NatGatewayIds=[nat_gateway_id],
-                WaiterConfig={'Delay': 5, 'MaxAttempts': 40}
-            )
-
-    def _create_routing_tables(self):
-        """
-        Creates the routing tables
-        """
-        if 'public_rtb_id' in self.config:
-            return
-
-        if 'public_rtb_id' in self.ec2_data:
-            sg_info = self.ec2_client.describe_route_tables(
-                RouteTableIds=[self.ec2_data['public_rtb_id']]
-            )
-            if len(sg_info) > 0:
-                self.config['public_rtb_id'] = self.ec2_data['public_rtb_id']
-
-        if 'public_rtb_id' not in self.config:
-            logger.debug(f'Creating public routing table in VPC {self.vpc_name}')
-            # The default RT is the public RT
-            response = self.ec2_client.describe_route_tables()
-            for rt in response['RouteTables']:
-                if rt['VpcId'] == self.config['vpc_id']:
-                    publ_route_table_id = rt['RouteTableId']
-            self.ec2_client.create_tags(
-                Resources=[publ_route_table_id],
-                Tags=[{'Key': 'Name', 'Value': f'{self.vpc_name}-publ'}]
-            )
-            self.ec2_client.associate_route_table(
-                RouteTableId=publ_route_table_id,
-                SubnetId=self.config['public_subnet_id']
-            )
-            self.ec2_client.create_route(
-                RouteTableId=publ_route_table_id,
-                DestinationCidrBlock='0.0.0.0/0',
-                GatewayId=self.config['internet_gateway_id']
-            )
-            self.config['public_rtb_id'] = publ_route_table_id
-
-        # if 'private_rtb_id' in self.ec2_data:
-        #     sg_info = self.ec2_client.describe_route_tables(
-        #         RouteTableIds=[self.ec2_data['private_rtb_id']]
-        #     )
-        #     if len(sg_info) > 0:
-        #         self.config['private_rtb_id'] = self.ec2_data['private_rtb_id']
-        #
-        # if 'private_rtb_id' not in self.config:
-        #     logger.debug(f'Creating private routing table in VPC {self.vpc_name}')
-        #     # Create private RT
-        #     priv_route_table_resp = self.ec2_client.create_route_table(
-        #         VpcId=self.config['vpc_id']
-        #     )
-        #     priv_route_table_id = priv_route_table_resp['RouteTable']['RouteTableId']
-        #     self.ec2_client.create_tags(
-        #         Resources=[priv_route_table_id],
-        #         Tags=[{'Key': 'Name', 'Value': f'{self.vpc_name}-priv'}]
-        #     )
-        #     self.ec2_client.associate_route_table(
-        #         RouteTableId=priv_route_table_id,
-        #         SubnetId=self.config['private_subnet_id']
-        #     )
-        #     self.ec2_client.create_route(
-        #         RouteTableId=priv_route_table_id,
-        #         DestinationCidrBlock='0.0.0.0/0',
-        #         GatewayId=self.config['nat_gateway_id']
-        #     )
-        #     self.config['private_rtb_id'] = priv_route_table_id
 
     def _create_security_group(self):
         """
@@ -356,15 +136,14 @@ class AWSEC2Backend:
 
         response = self.ec2_client.describe_security_groups()
         for sg in response['SecurityGroups']:
-            if sg['VpcId'] == self.config['vpc_id'] and sg['GroupName'] == self.vpc_name:
+            if sg['GroupName'] == "lithops-sg":
                 self.config['security_group_id'] = sg['GroupId']
 
         if 'security_group_id' not in self.config:
-            logger.debug(f'Creating Security Group in VPC {self.vpc_name}')
+            logger.debug(f'Creating Security Group for Lithops')
             response = self.ec2_client.create_security_group(
-                GroupName=self.vpc_name,
-                Description=self.vpc_name,
-                VpcId=self.config['vpc_id']
+                GroupName="lithops-sg",
+                Description="lithops-sg",
             )
 
             self.ec2_client.authorize_security_group_ingress(
@@ -373,15 +152,15 @@ class AWSEC2Backend:
                     {'IpProtocol': 'tcp',
                         'FromPort': 8080,
                         'ToPort': 8080,
-                        'IpRanges': [{'CidrIp': '10.0.0.0/16'}]},
+                        'IpRanges': [{'CidrIp': '172.31.0.0/16'}]},
                     {'IpProtocol': 'tcp',
                         'FromPort': 8081,
                         'ToPort': 8081,
-                        'IpRanges': [{'CidrIp': '10.0.0.0/16'}]},
+                        'IpRanges': [{'CidrIp': '172.31.0.0/16'}]},
                     {'IpProtocol': 'tcp',
                         'FromPort': 6379,
                         'ToPort': 6379,
-                        'IpRanges': [{'CidrIp': '10.0.0.0/16'}]},
+                        'IpRanges': [{'CidrIp': '172.31.0.0/16'}]},
                     {'IpProtocol': 'tcp',
                         'FromPort': 22,
                         'ToPort': 22,
@@ -466,7 +245,7 @@ class AWSEC2Backend:
         """
         Creates the master VM insatnce
         """
-        name = self.config.get('master_name') or f'lithops-master-{self.vpc_key}'
+        name = self.config.get('master_name') or f'lithops-master'
         self.master = EC2Instance(name, self.config, self.ec2_client, public=True)
         self.master.instance_id = self.config['instance_id'] if self.mode == StandaloneMode.CONSUME.value else None
         self.master.instance_type = self.config['master_instance_type']
@@ -540,7 +319,6 @@ class AWSEC2Backend:
                         master_name = tag['Value']
                 self.ec2_data = {
                     'mode': self.mode,
-                    'vpc_data_type': 'provided',
                     'ssh_data_type': 'provided',
                     'master_name': master_name,
                     'master_id': self.config['instance_id'],
@@ -553,20 +331,6 @@ class AWSEC2Backend:
             self._create_master_instance()
 
         elif self.mode in [StandaloneMode.CREATE.value, StandaloneMode.REUSE.value]:
-            # Create the VPC if not exists
-            self._create_vpc()
-
-            # Set the suffix used for the VPC resources
-            self.vpc_key = self.config['vpc_id'][-6:]
-
-            # Create the Subnet if not exists
-            self._create_subnets()
-            # Create the internet gateway if not exists
-            self._create_internet_gateway()
-            # Create the NAT gateway
-            # self._create_nat_gateway()
-            # Create routing tables
-            self._create_routing_tables()
             # Create the security group if not exists
             self._create_security_group()
             # Create the ssh key pair if not exists
@@ -583,23 +347,14 @@ class AWSEC2Backend:
 
             self.ec2_data = {
                 'mode': self.mode,
-                'vpc_data_type': self.vpc_data_type,
                 'ssh_data_type': self.ssh_data_type,
                 'master_name': self.master.name,
-                'master_id': self.vpc_key,
-                'vpc_name': self.vpc_name,
-                'vpc_id': self.config['vpc_id'],
+                'master_id': "",
                 'instance_role': self.config['instance_role'],
                 'target_ami': self.config['target_ami'],
                 'ssh_key_name': self.config['ssh_key_name'],
                 'ssh_key_filename': self.config['ssh_key_filename'],
-                'public_subnet_id': self.config['public_subnet_id'],
-                # 'private_subnet_id': self.config['private_subnet_id'],
                 'security_group_id': self.config['security_group_id'],
-                'internet_gateway_id': self.config['internet_gateway_id'],
-                # 'nat_gateway_id': self.config['nat_gateway_id'],
-                # 'private_rtb_id': self.config['private_rtb_id'],
-                'public_rtb_id': self.config['public_rtb_id'],
                 'instance_types': self.instance_types,
             }
 
@@ -634,7 +389,6 @@ class AWSEC2Backend:
                                 "AssociatePublicIpAddress": True,
                                 "DeviceIndex": 0,
                                 "Groups": [self.config["security_group_id"]],
-                                "SubnetId": self.config["public_subnet_id"],
                             }
                         ],
                     },
@@ -839,8 +593,7 @@ class AWSEC2Backend:
         """
         Deletes all worker VM instances
         """
-        msg = (f'Deleting all Lithops worker VMs from {self.vpc_name}'
-               if self.vpc_name else 'Deleting all Lithops worker VMs')
+        msg = 'Deleting all Lithops worker VMs'
         logger.info(msg)
 
         vms_prefixes = ('lithops-worker', 'lithops-master', 'building-image') if all else ('lithops-worker',)
@@ -849,8 +602,7 @@ class AWSEC2Backend:
         response = self.ec2_client.describe_instances()
         for res in response['Reservations']:
             for ins in res['Instances']:
-                if ins['State']['Name'] != 'terminated' and 'Tags' in ins \
-                   and 'VpcId' in ins and self.ec2_data['vpc_id'] == ins['VpcId']:
+                if ins['State']['Name'] != 'terminated' and 'Tags' in ins:
                     for tag in ins['Tags']:
                         if tag['Key'] == 'Name' and tag['Value'].startswith(vms_prefixes):
                             ins_to_delete.append(ins['InstanceId'])
@@ -862,9 +614,6 @@ class AWSEC2Backend:
         master_pk = os.path.join(self.cache_dir, f"{self.ec2_data['master_name']}-id_rsa.pub")
         if all and os.path.isfile(master_pk):
             os.remove(master_pk)
-
-        if self.ec2_data['vpc_data_type'] == 'provided':
-            return
 
         while all and ins_to_delete:
             logger.debug('Waiting for VM instances to be terminated')
@@ -878,109 +627,6 @@ class AWSEC2Backend:
                 break
             else:
                 time.sleep(8)
-
-    def _delete_vpc(self):
-        """
-        Deletes all the VPC resources
-        """
-        if self.ec2_data['vpc_data_type'] == 'provided':
-            return
-
-        msg = (f'Deleting all Lithops VPC resources from {self.vpc_name}'
-               if self.vpc_name else 'Deleting all Lithops VPC resources')
-        logger.info(msg)
-
-        total_correct = 0
-
-        # Security Group
-        try:
-            logger.debug(f"Deleting security group {self.ec2_data['security_group_id']}")
-            self.ec2_client.delete_security_group(
-                GroupId=self.ec2_data['security_group_id']
-            )
-            total_correct += 1
-        except ClientError as e:
-            if e.response['ResponseMetadata']['HTTPStatusCode'] == 400 and \
-               'does not exist' in e.response['Error']['Message']:
-                total_correct += 1
-            logger.debug(e.response['Error']['Message'])
-
-        # NAT Gateway
-        # try:
-        #     logger.debug(f"Deleting nat gateway {self.ec2_data['nat_gateway_id']}")
-        #     self.ec2_client.delete_nat_gateway(
-        #         NatGatewayId=self.ec2_data['nat_gateway_id']
-        #     )
-        #     self.ec2_client.get_waiter('nat_gateway_deleted').wait(
-        #         NatGatewayIds=[self.ec2_data['nat_gateway_id']],
-        #         WaiterConfig={'Delay': 5, 'MaxAttempts': 40}
-        #     )
-        #     total_correct += 1
-        # except ClientError as e:
-        #     if e.response['ResponseMetadata']['HTTPStatusCode'] == 400 and \
-        #        'does not exist' in e.response['Error']['Message']:
-        #         total_correct += 1
-        #     logger.debug(e.response['Error']['Message'])
-
-        # Subnets
-        try:
-            logger.debug(f"Deleting public {self.ec2_data['public_subnet_id']}")
-            self.ec2_client.delete_subnet(SubnetId=self.ec2_data['public_subnet_id'])
-            total_correct += 1
-        except ClientError as e:
-            if e.response['ResponseMetadata']['HTTPStatusCode'] == 400 and \
-               'does not exist' in e.response['Error']['Message']:
-                total_correct += 1
-            logger.debug(e.response['Error']['Message'])
-        # try:
-        #     logger.debug(f"Deleting private {self.ec2_data['private_subnet_id']}")
-        #     self.ec2_client.delete_subnet(SubnetId=self.ec2_data['private_subnet_id'])
-        #     total_correct += 1
-        # except ClientError as e:
-        #     if e.response['ResponseMetadata']['HTTPStatusCode'] == 400 and \
-        #        'does not exist' in e.response['Error']['Message']:
-        #         total_correct += 1
-        #     logger.debug(e.response['Error']['Message'])
-
-        # Internet gateway
-        try:
-            logger.debug(f"Detaching internet gateway {self.ec2_data['internet_gateway_id']}")
-            self.ec2_client.detach_internet_gateway(
-                InternetGatewayId=self.ec2_data['internet_gateway_id'],
-                VpcId=self.ec2_data['vpc_id'])
-            total_correct += 1
-        except ClientError as e:
-            if e.response['ResponseMetadata']['HTTPStatusCode'] == 400 and \
-               'does not exist' in e.response['Error']['Message']:
-                total_correct += 1
-            logger.debug(e.response['Error']['Message'])
-        try:
-            logger.debug(f"Deleting internet gateway {self.ec2_data['internet_gateway_id']}")
-            self.ec2_client.delete_internet_gateway(
-                InternetGatewayId=self.ec2_data['internet_gateway_id']
-            )
-            total_correct += 1
-        except ClientError as e:
-            if e.response['ResponseMetadata']['HTTPStatusCode'] == 400 and \
-               'does not exist' in e.response['Error']['Message']:
-                total_correct += 1
-            logger.debug(e.response['Error']['Message'])
-
-        # VPC
-        try:
-            logger.debug(f"Deleting VPC {self.ec2_data['vpc_id']}")
-            self.ec2_client.delete_vpc(VpcId=self.ec2_data['vpc_id'])
-            total_correct += 1
-        except ClientError as e:
-            if e.response['ResponseMetadata']['HTTPStatusCode'] == 400 and \
-               'does not exist' in e.response['Error']['Message']:
-                total_correct += 1
-            logger.debug(e.response['Error']['Message'])
-
-        if total_correct < 5:
-            logger.error("Couldn't delete all the VPC resources, try againg in a few seconds")
-
-        return total_correct == 5
 
     def _delete_ssh_key(self):
         """
@@ -1013,17 +659,9 @@ class AWSEC2Backend:
             return True
 
         if self.mode == StandaloneMode.CONSUME.value:
-            self._delete_vpc_data()
             return True
         else:
             self._delete_vm_instances(all=all)
-            if all:
-                if self._delete_vpc():
-                    self._delete_ssh_key()
-                    self._delete_vpc_data()
-                    return True
-                else:
-                    return False
 
     def clear(self, job_keys=None):
         """
@@ -1283,7 +921,6 @@ class EC2Instance:
         LaunchSpecification['NetworkInterfaces'] = [{
             'AssociatePublicIpAddress': True,
             'DeviceIndex': 0,
-            'SubnetId': self.config['public_subnet_id'],
             'Groups': [self.config['security_group_id']]
         }]
 
