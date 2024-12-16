@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-
+import ast
 import os
 import re
 import time
@@ -94,6 +94,7 @@ class AWSEC2Backend:
         self.workers = []
 
         self.launch_template_name = "lithops-launch-template"
+        self.allocation_strategy = self.config["allocation_strategy"]
 
         msg = COMPUTE_CLI_MSG.format('AWS EC2')
         logger.info(f"{msg} - Region: {self.region_name}")
@@ -396,14 +397,18 @@ class AWSEC2Backend:
             else:
                 raise e
 
-    def create_fleet(self, memory_to_create):
-        strategy = "price-capacity-optimized"  # TODO-KMU: make this configurable
-
-        self.create_launch_template()
+    def _create_aws_fleet(self, memory_to_create):
+        if self.allocation_strategy not in ["lowest-price",
+                                            "capacity-optimized",
+                                            "capacity-optimized-prioritized",
+                                            "diversified",
+                                            "price-capacity-optimized"]:
+            raise Exception("Allocation strategy must be 'lowest-price', 'capacity-optimized', "
+                            "'diversified' or 'capacity-optimized-prioritized'")
 
         response = self.ec2_client.create_fleet(
             SpotOptions={
-                "AllocationStrategy": strategy,
+                "AllocationStrategy": self.allocation_strategy,
                 "SingleAvailabilityZone": False,
             },
             LaunchTemplateConfigs=[
@@ -436,7 +441,76 @@ class AWSEC2Backend:
             Type="instant",
         )
 
-        instance_ids = [instance_id for instance in response['Instances'] for instance_id in instance['InstanceIds']]
+        return [instance_id for instance in response['Instances'] for instance_id in instance['InstanceIds']]
+
+    def _create_kmu_fleet(self, memory_to_create, total_calls):
+        import requests
+        import math
+
+        if self.allocation_strategy not in ['kmu-ppf', 'kmu-ppcp']:
+            raise Exception("Allocation strategy must be 'kmu-ppf' or 'kmu-ppcp'")
+
+        policy = "PPCP" if self.allocation_strategy == "kmu-ppcp" else "PPF"
+        endpoint = (f"https://1od368a36h.execute-api.us-west-2.amazonaws.com/default/optimal_combination"
+                    f"?InstanceTypes=['c5','c6i','c7i']&Regions=['{self.region_name}']&SelectBy={policy}")
+        endpoint += (f"&FunctionNum={total_calls}"
+                     f"&MemPerFunction={int(memory_to_create / (total_calls * 1024))}")
+
+        response = requests.get(endpoint)
+        if response.status_code != 200:
+            raise Exception(f"Could not query the oracle: {response.text}")
+        print(response.text)
+
+        instances_to_request = {}
+        for item, value in response.json()[0].items():
+            if item[0] == '(':
+                instances_to_request[ast.literal_eval(item)[0]] = value
+
+        counts_list = []
+        for it, count in instances_to_request.items():
+            counts_list.append(count)
+
+        lcm = math.lcm(*counts_list)
+
+        overrides = []
+        for it, count in instances_to_request.items():
+            overrides.append({'InstanceType': it,
+                              'WeightedCapacity': lcm / count})
+
+        response = self.ec2_client.create_fleet(
+            SpotOptions={
+                # compulsory (weighting & LCM algorithm)
+                'AllocationStrategy': 'diversified',
+                'SingleAvailabilityZone': False,
+            },
+            LaunchTemplateConfigs=[
+                {
+                    'LaunchTemplateSpecification': {
+                        'LaunchTemplateName': self.launch_template_name,
+                        'Version': '$Latest'
+                    },
+                    'Overrides': overrides
+                }
+            ],
+            TargetCapacitySpecification={
+                "TotalTargetCapacity": lcm * len(overrides),
+                "DefaultTargetCapacityType": "spot"
+            },
+            Type="instant"
+        )
+
+        return [instance_id for instance in response['Instances'] for instance_id in instance['InstanceIds']]
+
+    def create_fleet(self, memory_to_create, total_calls):
+        strategy = self.allocation_strategy
+
+        self.create_launch_template()
+
+        if "kmu" in strategy:
+            instance_ids = self._create_kmu_fleet(memory_to_create, total_calls)
+        else:
+            instance_ids = self._create_aws_fleet(memory_to_create)
+
         for instance_id in instance_ids:
             instance_name = f"lithops-worker-{instance_id[-6:]}"
             worker = EC2Instance(

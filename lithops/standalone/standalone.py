@@ -231,7 +231,7 @@ class StandaloneHandler:
         def create_workers(memory_to_create):
             current_workers_old = set(self.backend.workers)
 
-            self.backend.create_fleet(memory_to_create)
+            self.backend.create_fleet(memory_to_create, total_calls)
 
             current_workers_new = set(self.backend.workers)
             new_workers = current_workers_new - current_workers_old
@@ -296,9 +296,6 @@ class StandaloneHandler:
              'instance_type': inst.instance_type}
             for inst in new_workers
         ]
-
-        logger.info("***Propagating job to master VM***")
-        logger.info(job_payload)
 
         # invoke Job
         self._make_request('POST', 'job/run', job_payload)
