@@ -16,7 +16,10 @@ install_requires = [
     'cloudpickle',
     'tblib',
     'ps-mem',
-    'psutil'
+    'psutil',
+    'networkx',
+    'python-louvain',
+    'scipy'
 ]
 
 

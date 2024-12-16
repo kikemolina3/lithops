@@ -220,7 +220,7 @@ class StandaloneHandler:
                 f'{job_payload["worker_processes"]}'
             )
         else:
-            fn_memory = 2048
+            fn_memory = self.config['aws_ec2'].get('runtime_memory', 2048)
             required_memory = total_calls * fn_memory
 
             logger.debug(
@@ -290,6 +290,8 @@ class StandaloneHandler:
         # prepare worker instances data
         job_payload['worker_instances'] = [
             {'name': inst.name,
+             'runtime_memory': self.config[backend].get('runtime_memory', 2048),
+             'worker_processes': inst.worker_processes,
              'private_ip': inst.private_ip,
              'instance_id': inst.instance_id,
              'ssh_credentials': inst.ssh_credentials,

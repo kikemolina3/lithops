@@ -249,8 +249,9 @@ def run_worker():
     Thread(target=run_wsgi, daemon=True).start()
 
     # Start the consumer threads
-    worker_processes = standalone_config[standalone_config['backend']]['worker_processes']
-    worker_processes = CPU_COUNT if worker_processes == 'AUTO' else worker_processes
+    # worker_processes = standalone_config[standalone_config['backend']]['worker_processes']
+    # worker_processes = CPU_COUNT if worker_processes == 'AUTO' else worker_processes
+    worker_processes = worker_data['worker_processes']
     logger.info(f"Starting Worker - Instace type: {worker_data['instance_type']} - Runtime "
                 f"name: {standalone_config['runtime']} - Worker processes: {worker_processes}")
 

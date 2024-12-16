@@ -179,7 +179,7 @@ def get_workers():
         if is_worker_free(worker_data['private_ip']):
             free_workers.append(
                 (
-                    worker_data['worker_processes'] * 2048,
+                    worker_data['worker_processes'] * int(worker_data['runtime_memory']),
                     worker_data['name'],
                     worker_data['private_ip'],
                     worker_data['instance_id'],
@@ -209,8 +209,8 @@ def save_worker(worker, standalone_config, work_queue_name):
     del config[config['backend']]
     config = {key: str(value) if isinstance(value, bool) else value for key, value in config.items()}
 
-    worker_processes = CPU_COUNT if worker.config['worker_processes'] == 'AUTO' \
-        else worker.config['worker_processes']
+    # worker_processes = CPU_COUNT if worker.config['worker_processes'] == 'AUTO' \
+    #     else worker.config['worker_processes']
 
     redis_client.hset(f"worker:{worker.name}", mapping={
         'name': worker.name,
@@ -218,7 +218,8 @@ def save_worker(worker, standalone_config, work_queue_name):
         'private_ip': worker.private_ip or '',
         'instance_id': worker.instance_id or '',
         'instance_type': worker.instance_type,
-        'worker_processes': worker_processes,
+        'worker_processes': worker.worker_processes or '',
+        'runtime_memory': worker.runtime_memory or '',
         'created': str(time.time()),
         'ssh_credentials': json.dumps(worker.ssh_credentials),
         'queue_name': work_queue_name,
@@ -296,6 +297,8 @@ def setup_worker_create_reuse(standalone_handler, worker_info, work_queue_name):
             'ssh_credentials': worker.ssh_credentials,
             'instance_type': worker.instance_type,
             'master_ip': master_ip,
+            'runtime_memory': worker.runtime_memory,
+            'worker_processes': worker.worker_processes,
             'work_queue_name': work_queue_name,
             'lithops_version': __version__
         }
@@ -455,7 +458,7 @@ def stop():
     job_key_list = flask.request.get_json(force=True, silent=True)
     # Start a separate thread to do the task in background,
     # for not keeping the client waiting.
-    Thread(target=cancel_job_process, args=(job_key_list, )).start()
+    Thread(target=cancel_job_process, args=(job_key_list,)).start()
 
     return ('', 204)
 

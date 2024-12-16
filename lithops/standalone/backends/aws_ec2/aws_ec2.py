@@ -459,7 +459,6 @@ class AWSEC2Backend:
         response = requests.get(endpoint)
         if response.status_code != 200:
             raise Exception(f"Could not query the oracle: {response.text}")
-        print(response.text)
 
         instances_to_request = {}
         for item, value in response.json()[0].items():
@@ -474,6 +473,7 @@ class AWSEC2Backend:
 
         overrides = []
         for it, count in instances_to_request.items():
+            logger.info(f"KMU {policy}: requesting {count} instances of type {it}")
             overrides.append({'InstanceType': it,
                               'WeightedCapacity': lcm / count})
 
@@ -521,6 +521,8 @@ class AWSEC2Backend:
                 instance_id=instance_id,
             )
             worker.memory = self.instance_types[worker.instance_type] * 2048
+            worker.runtime_memory = self.config.get('runtime_memory', 2048)
+            worker.worker_processes = worker.memory // worker.runtime_memory
             worker.ssh_credentials.pop('password')
             worker.ssh_credentials['key_filename'] = '~/.ssh/lithops_id_rsa'
             self.workers.append(worker)
@@ -854,6 +856,8 @@ class EC2Instance:
         }
 
         self.memory = None
+        self.worker_processes = None
+        self.runtime_memory = None
 
     def __str__(self):
         ip = self.public_ip if self.public else self.private_ip
