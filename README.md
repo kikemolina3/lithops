@@ -1,198 +1,114 @@
-<p align="center">
-  <a href="http://lithops.cloud">
-    <h1 id='lithops' align="center"><img src="docs/_static/lithops_logo_readme.png" alt="Lithops" title="Lightweight Optimized Processing"/></h1>
-  </a>
-</p>
+# Lithops fork for compute intensive pipelines
 
-<p align="center">
-  <a aria-label="License" href="https://github.com/lithops-cloud/lithops/blob/master/LICENSE">
-    <img alt="" src="https://img.shields.io/github/license/lithops-cloud/lithops?style=for-the-badge&labelColor=000000">
-  </a>
-  <a aria-label="PyPi" href="https://pypi.org/project/lithops/">
-    <img alt="" src="https://img.shields.io/pypi/v/lithops?style=for-the-badge&labelColor=000000">
-  </a>
-  <a aria-label="Python" href="#lithops">
-    <img alt="" src="https://img.shields.io/pypi/pyversions/lithops?style=for-the-badge&labelColor=000000">
-  </a>
-</p>
+This repository contains the code for the fork of Lithops that is used to run a compute-intensive pipeline (graph
+analytics application) over AWS EC2 spot instances.
 
-Lithops is a Python multi-cloud distributed computing framework. It allows you to run unmodified local python code at massive scale in the main
-serverless computing platforms. Lithops delivers the user’s code into the cloud without requiring knowledge of how it is deployed and run. Moreover, its multicloud-agnostic architecture ensures portability across cloud providers.
+The purpose of this ad-hoc fork is to compare the performance of the AWS-provided spots allocations strategies against a
+the KMU oracle, with is capable of recommending the best spots in terms of power-price ratio (performance).
 
-Lithops is specially suited for highly-parallel programs with little or no need for communication between processes, but it also supports parallel applications that need to share state among processes. Examples of applications that run with Lithops include Monte Carlo simulations, deep learning and machine learning processes, metabolomics computations, and geospatial analytics, to name a few.
+> ⚠️ **Important note**: This fork is an ad-hoc version of Lithops whose purpose is to run a specific experiment and
+> compare the performance of different spot allocation strategies.
+>
+> Please follow carefully the instructions below to run the experiment, not attending to the general Lithops
+> documentation.
+>
+> If you find any issue or have any question, please contact the owner of this repository.
 
+## The compute-intensive app: Graph Analytics
 
-## Installation
+The compute-intensive application that we are running is a graph analytics application that computes some popular
+algorithms of a graph. The graph operations usually involve a lot of computation (cpu-bound stages) and are very
+suitable for demonstrating the advantages of power-price spots optimization.
 
-1. Install Lithops from the PyPi repository:
+The pipeline perform the following operations (see image):
 
+![img.png](docs/_static/img.png)
+
+- The first step is to persist random graphs in object storage (**S3**).
+- Then, two parallel stages are launched:
+    - **PageRank** calculation: order the nodes of the graph by their importance.
+    - **Community detection**: identify the communities of the graph.
+- Finally, after the PageRank return is ready, the pipeline computes the **shortest paths** between different nodes in
+  the graph.
+
+The pipeline is customizable via constants: in this way, we can tune execution times, parallelism degree, experiment
+scale...
+We can also consider add/modify the stages of the pipeline, for getting different behaviors.
+
+For the moment, is provided a first setup for the experiment, but it can be easily modified.
+
+- Number of graphs: N (define depending on the fleet size desired)
+- Number of nodes per graph: 5000
+- Edge probability: 0.5
+- Number of shortest paths to compute: 150
+
+And for these values, the execution info is:
+
+- PageRank: approx 10 seconds cpu-bound time
+- Community detection: approx 4 minutes cpu-bound time
+- Shortest paths: approx 4 minutes cpu-bound time
+- Memory per worker: ensure at least 4GB
+
+## Executing the experiment
+
+Please, for executing the pipeline, follow the next steps carefully:
+
+1. Clone this repository.
+2. Ensure that you are using Python 3.10.
+3. Install this Lithops fork:
     ```bash
-    pip install lithops
+    pip install .
     ```
+4. Setup AWS resources: follow
+   the [Installation Lithops section](https://lithops-cloud.github.io/docs/source/compute_config/aws_ec2.html#installation),
+   creating required entities in AWS.
+5. Store this configuration in `~/.lithops/config`:
+    ```yaml
+    lithops:
+        backend: aws_ec2
+        storage: aws_s3
+        log_level: DEBUG
+    
+    aws:
+        access_key_id: ...
+        secret_access_key: ...
+        session_token: ...
+        region: us-east-1
+    
+    aws_ec2:
+        instance_role: ...
+        exec_mode: reuse
+        runtime_memory: 4096
+        soft_dismantle_timeout: 30
+        target_ami: ami-0f4fa9094598e07a2
+        allocation_strategy: ...
+    ```
+6. Fill/replace the values in the configuration. We provide the explanation of the fields here:
+    - `access_key_id`, `secret_access_key`, `session_token`: AWS credentials.
+    - `instance_role`: the role that the instances will assume.
+    - `allocation_strategy`: the strategy to use for spot allocation. Options: AWS strategies (`lowest-price`,
+      `capacity-optimized`,
+      `capacity-optimized-prioritized`,
+      `diversified`,
+      `price-capacity-optimized`) or KMU policies (`kmu-ppcp`, `kmu-ppf`)
+    - `target_ami`: Don't change this value. We provide a custom AMI with the required dependencies.
+    - `runtime_memory` (MB): Ensure that the memory is enough for the pipeline. OOM errors can occur, and then the pipeline stuck with no error message.
+    - `soft_dismantle_timeout` (s): The time to kill the spot instances after no activity periods.
 
-2. Execute a *Hello World* function:
-  
-   ```bash
-   lithops hello
-   ```
+7. Run the pipeline:
+    ```bash
+    python3 examples/graph_analytics.py
+    ```
+    The pipeline will start, and you will see the logs (`DEBUG` level for more info) of the execution.
 
-## Configuration
-Lithops provides an extensible backend architecture (compute, storage) that is designed to work with different Cloud providers and on-premise backends. In this sense, you can code in python and run it unmodified in IBM Cloud, AWS, Azure, Google Cloud, Aliyun and Kubernetes or OpenShift.
-
-[Follow these instructions to configure your compute and storage backends](config/)
-
-<p align="center">
-<a href="config/README.md#compute-and-storage-backends">
-<img src="docs/source/images/multicloud.jpg" alt="Multicloud Lithops" title="Multicloud Lithops"/>
-</a>
-</p>
+## Collecting the data
 
 
-## High-level API
+## Wiping the resources
+Sometimes, the pipeline can fail (or other issues) and the resources are not correctly cleaned. For this, you can use the
+clean command, and all the cloud resources and local caches will be removed:
 
-Lithops is shipped with 2 different high-level Compute APIs, and 2 high-level Storage APIs
-
-<div align="center">
-<table>
-<tr>
-  <th>
-    <img width="50%" height="1px">
-    <p><small><a href="docs/api_futures.md">Futures API</a></small></p>
-  </th>
-  <th>
-    <img width="50%" height="1px">
-    <p><small><a href="docs/source/api_multiprocessing.rst">Multiprocessing API</a></small></p>
-  </th>
-</tr>
-
-<tr>
-<td>
-
-```python
-from lithops import FunctionExecutor
-
-def hello(name):
-    return f'Hello {name}!'
-
-with FunctionExecutor() as fexec:
-    f = fexec.call_async(hello, 'World')
-    print(f.result())
+```bash
+lithops clean
 ```
-</td>
-<td>
 
-```python
-from lithops.multiprocessing import Pool
-
-def double(i):
-    return i * 2
-
-with Pool() as pool:
-    result = pool.map(double, [1, 2, 3, 4])
-    print(result)
-```
-</td>
-</tr>
-
-</table>
-
-<table>
-<tr>
-  <th>
-    <img width="50%" height="1px">
-    <p><small><a href="docs/api_storage.md">Storage API</a></small></p>
-  </th>
-  <th>
-    <img width="50%" height="1px">
-    <p><small><a href="docs/source/api_storage_os.rst">Storage OS API</a></small></p>
-  </th>
-</tr>
-
-<tr>
-<td>
-
-```python
-from lithops import Storage
-
-if __name__ == "__main__":
-    st = Storage()
-    st.put_object(bucket='mybucket',
-                  key='test.txt',
-                  body='Hello World')
-
-    print(st.get_object(bucket='lithops',
-                        key='test.txt'))
-```
-</td>
-<td>
-
-```python
-from lithops.storage.cloud_proxy import os
-
-if __name__ == "__main__":
-    filepath = 'bar/foo.txt'
-    with os.open(filepath, 'w') as f:
-        f.write('Hello world!')
-
-    dirname = os.path.dirname(filepath)
-    print(os.listdir(dirname))
-    os.remove(filepath)
-```
-</td>
-</tr>
-
-</table>
-</div>
-
-You can find more usage examples in the [examples](/examples) folder.
-
-## Execution Modes
-
-Lithops is shipped with 3 different modes of execution. The execution mode allows you to decide where and how the functions are executed.
-
-* [Localhost Mode](docs/source/execution_modes.rst#localhost-mode)
-
-  This mode allows you to execute functions on the local machine using processes, providing a convenient way to leverage Lithops' distributed computing capabilities without relying on cloud resources. This mode is particularly useful for development, testing, and debugging purposes. This is the default mode of execution if no configuration is provided.
-
-* [Serverless Mode](docs/source/execution_modes.rst#serverless-mode)
-
-  This mode allows you to execute functions on popular serverless compute services, leveraging the scalability, isolation, and automatic resource provisioning provided by these platforms. With serverless mode, you can easily parallelize task execution, harness the elastic nature of serverless environments, and simplify the development and deployment of scalable data processing workloads and parallel applications.
-
-* [Standalone Mode](docs/source/execution_modes.rst#standalone-mode)
-
-  This mode provides the capability to execute functions on one or multiple virtual machines (VMs) simultaneously, in a serverless-like fashion, without requiring manual provisioning as everything is automatically created. This mode can be used in a private cluster or in the cloud, where functions within each VM are executed using parallel processes.
-
-
-## Documentation
-
-For documentation on using Lithops, see [latest release documentation](https://lithops-cloud.github.io/docs/) or [current github docs](docs/user_guide.md).
-
-If you are interested in contributing, see [CONTRIBUTING.md](./CONTRIBUTING.md).
-
-## Additional resources
-
-### Blogs and Talks
-* [Simplify the developer experience with OpenShift for Big Data processing by using Lithops framework](https://medium.com/@gvernik/simplify-the-developer-experience-with-openshift-for-big-data-processing-by-using-lithops-framework-d62a795b5e1c)
-* [Speed-up your Python applications using Lithops and Serverless Cloud resources](https://itnext.io/speed-up-your-python-applications-using-lithops-and-serverless-cloud-resources-a64beb008bb5)
-* [Serverless Without Constraints](https://www.ibm.com/cloud/blog/serverless-without-constraints)
-* [Lithops, a Multi-cloud Serverless Programming Framework](https://itnext.io/lithops-a-multi-cloud-serverless-programming-framework-fd97f0d5e9e4)
-* [CNCF Webinar - Toward Hybrid Cloud Serverless Transparency with Lithops Framework](https://www.youtube.com/watch?v=-uS-wi8CxBo)
-* [Using Serverless to Run Your Python Code on 1000 Cores by Changing Two Lines of Code](https://www.ibm.com/cloud/blog/using-serverless-to-run-your-python-code-on-1000-cores-by-changing-two-lines-of-code)
-* [Decoding dark molecular matter in spatial metabolomics with IBM Cloud Functions](https://www.ibm.com/cloud/blog/decoding-dark-molecular-matter-in-spatial-metabolomics-with-ibm-cloud-functions)
-* [Your easy move to serverless computing and radically simplified data processing](https://www.slideshare.net/gvernik/your-easy-move-to-serverless-computing-and-radically-simplified-data-processing-238929020) Strata Data Conference, NY 2019. See video of Lithops usage [here](https://www.youtube.com/watch?v=EYa95KyYEtg&list=PLpR7f3Www9KCjYisaG7AMaR0C2GqLUh2G&index=3&t=0s) and the example of Monte Carlo [here](https://www.youtube.com/watch?v=vF5HI2q5VKw&list=PLpR7f3Www9KCjYisaG7AMaR0C2GqLUh2G&index=2&t=0s)
-* [Speed up data pre-processing with Lithops in deep learning](https://developer.ibm.com/patterns/speed-up-data-pre-processing-with-pywren-in-deep-learning/)
-* [Predicting the future with Monte Carlo simulations over IBM Cloud Functions](https://www.ibm.com/cloud/blog/monte-carlo-simulations-with-ibm-cloud-functions)
-* [Process large data sets at massive scale with Lithops over IBM Cloud Functions](https://www.ibm.com/cloud/blog/process-large-data-sets-massive-scale-pywren-ibm-cloud-functions)
-* [Industrial project in Technion on Lithops](http://www.cs.technion.ac.il/~cs234313/projects_sites/W19/04/site/)
-
-### Papers
-
-* [Outsourcing Data Processing Jobs with Lithops](https://ieeexplore.ieee.org/document/9619947) - IEEE Transactions on Cloud Computing 2022
-* [Towards Multicloud Access Transparency in Serverless Computing](https://www.computer.org/csdl/magazine/so/5555/01/09218932/1nMMkpZ8Ko8) - IEEE Software 2021
-* [Primula: a Practical Shuffle/Sort Operator for Serverless Computing](https://dl.acm.org/doi/10.1145/3429357.3430522) - ACM/IFIP International Middleware Conference 2020. [See presentation here](https://www.youtube.com/watch?v=v698iu5YfWM)
-* [Bringing scaling transparency to Proteomics applications with serverless computing](https://dl.acm.org/doi/abs/10.1145/3429880.3430101) - 6th International Workshop on Serverless Computing (WoSC6) 2020. [See presentation here](https://www.serverlesscomputing.org/wosc6/#p10)
-* [Serverless data analytics in the IBM Cloud](https://dl.acm.org/citation.cfm?id=3284029) - ACM/IFIP International Middleware Conference 2018
-
-
-# Acknowledgements
-This project has received funding from the European Union's Horizon 2020 research and innovation programme under grant agreement No 825184 (CloudButton).

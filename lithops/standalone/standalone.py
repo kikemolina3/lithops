@@ -257,7 +257,7 @@ class StandaloneHandler:
                 None,
                 job_payload['runtime_name'],
             )
-            total_memory = sum([w[0] for w in workers])
+            total_memory = sum([int(w[0]) for w in workers])
             logger.debug(
                 f"Found {total_memory} free memory attached to {self.backend.master}"
             )
