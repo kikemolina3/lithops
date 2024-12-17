@@ -235,7 +235,7 @@ class StandaloneHandler:
 
             current_workers_new = set(self.backend.workers)
             new_workers = current_workers_new - current_workers_old
-            memory_allocated = [w.memory for w in new_workers]
+            memory_allocated = sum([w.memory for w in new_workers])
             logger.debug(
                 f"Total new spot memory allocated: {memory_allocated}/{workers_to_create}"
             )
