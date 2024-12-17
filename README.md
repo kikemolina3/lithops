@@ -32,12 +32,12 @@ The pipeline perform the following operations (see image):
   the graph.
 
 The pipeline is customizable via constants: in this way, we can tune execution times, parallelism degree, experiment
-scale...
-We can also consider add/modify the stages of the pipeline, for getting different behaviors.
+scale... (please see [`examples/graph_analytics.py`](./examples/graph_analytics.py))
+We can also consider in the future to add/modify the stages of the pipeline, for getting different behaviors if necessary.
 
 For the moment, is provided a first setup for the experiment, but it can be easily modified.
 
-- Number of graphs: N (define depending on the fleet size desired)
+- Number of graphs: variable (define depending on the fleet size desired)
 - Number of nodes per graph: 5000
 - Edge probability: 0.5
 - Number of shortest paths to compute: 150
@@ -45,10 +45,12 @@ For the moment, is provided a first setup for the experiment, but it can be easi
 And for these values, the execution info is:
 
 - PageRank: approx 10 seconds cpu-bound time; low RAM usage
-- Community detection: approx 400-650 seconds cpu-bound time; nearly 3GB RAM usage
-- Shortest paths: approx 4 minutes cpu-bound time
+- Community detection: approx 5-10 minutes cpu-bound time; nearly 3GB RAM usage
+- Shortest paths: approx 5-10 minutes cpu-bound time
 - Memory per worker: ensure at least 4GB
-
+- Download time: only a few seconds
+- Graph size: 77MB/graph
+  
 ## Executing the experiment
 
 Please, for executing the pipeline, follow the next steps carefully:
@@ -61,7 +63,7 @@ Please, for executing the pipeline, follow the next steps carefully:
     ```
 4. Setup AWS resources: follow
    the [Installation Lithops section](https://lithops-cloud.github.io/docs/source/compute_config/aws_ec2.html#installation),
-   creating required entities in AWS.
+   creating required entities (until get an usable IAM instance profile) in AWS.
 5. Store this configuration in `~/.lithops/config`:
     ```yaml
     lithops:
@@ -115,7 +117,7 @@ experiment-no1/
 Inspect the CSV columns for getting the full information of the data collected.
 
 #### Plotting the execution
-You still can use the `plot` function for plotting the executions. This generate the default Lithops plots (info here).
+You still can use the `plot` function for plotting the executions. This generate the default Lithops plots [info here](https://lithops-cloud.github.io/docs/source/api_stats.html#execution-summary-plots)
 
 But is preferable to collect all the metrics (CSV files above), and then plot them with a custom script.
 
