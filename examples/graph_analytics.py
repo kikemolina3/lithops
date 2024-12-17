@@ -13,17 +13,19 @@ import networkx as nx
 import pickle
 import community.community_louvain as community_louvain
 
-NODES = 5000
-EDGE_PROB = 0.5
-N_DIJKSTRA = 150
+NUM_FUNCTIONS = 4
+NODES = 500
+EDGE_PROB = 0.2
+N_DIJKSTRA = 50
 BUCKET = "graph-analysis"
+EXPERIMENT_NAME = "experiment-no1"
 
 # Tune the constant to adjust the execution times of the stages
 # For NODES = 5000, EDGE_PROB = 0.5, N_DIJKSTRA = 150:
 # - graph size is 77MB
 # - pagerank takes around 10 seconds
-# - community detection takes around 4 mins
-# - dijkstra takes around 1.6s * 150 ->  4 mins
+# - community detection takes around 5-10 mins
+# - dijkstra takes around 5-10 mins
 
 
 get_graph_name = lambda x: x.key.split("/")[-1]
@@ -33,7 +35,7 @@ def gen_graphs(n):
     storage.create_bucket(BUCKET)
     try:
         last_index = int(storage.list_objects(BUCKET, "graphs/")[-1]["Key"][-1]) + 1
-    except IndexError | KeyError:
+    except (IndexError, KeyError):
         last_index = 0
     graphs = []
     for i in range(last_index, n):
@@ -69,11 +71,12 @@ def first_n_dijkstra(obj):
 
 
 if __name__ == "__main__":
-    fexec = lithops.FunctionExecutor()
     storage = lithops.Storage()
-    gen_graphs(4)
+    gen_graphs(NUM_FUNCTIONS)
+    fexec = lithops.FunctionExecutor()
     fexec.map(community_detection, BUCKET + "/graphs/")
     fexec.map(compute_pagerank, BUCKET + "/graphs/").get_result()
     fexec.map(first_n_dijkstra, BUCKET + "/graphs/")
     fexec.wait()
+    fexec.dump_stats_to_csv(EXPERIMENT_NAME)
     print("Finished")

@@ -171,6 +171,42 @@ class AWSEC2Backend:
 
             self.config['security_group_id'] = response['GroupId']
 
+    def get_workers_history(self):
+        logger.debug('Processing workers history request')
+        result = []
+        for worker in self.workers:
+            item = {}
+            response = self.ec2_client.describe_instances(InstanceIds=[worker.instance_id])
+            for res in response['Reservations']:
+                for ins in res['Instances']:
+                    if ins['InstanceId'] == worker.instance_id:
+                        item['instance_id'] = worker.instance_id
+                        item['init_stamp'] = ins['LaunchTime'].timestamp()
+                        if ins['StateTransitionReason'] != "":
+                            end_tstamp_str = re.findall('.*\((.*)\)', ins['StateTransitionReason'])[0]
+                            end_tstamp = datetime.strptime(end_tstamp_str, "%Y-%m-%d %H:%M:%S GMT").timestamp()
+                        else:
+                            end_tstamp = datetime.now().timestamp()
+                        item['end_stamp'] = end_tstamp
+                        instance_type = ins['InstanceType']
+                        availability_zone = ins['Placement']['AvailabilityZone']
+                        spot_price_response = self.ec2_client.describe_spot_price_history(
+                            InstanceTypes=[instance_type],
+                            AvailabilityZone=availability_zone,
+                            MaxResults=1,
+                            ProductDescriptions=['Linux/UNIX']
+                        )
+                        spot_price = spot_price_response['SpotPriceHistory'][0]['SpotPrice']
+                        item['spot_price'] = spot_price
+                        item['instance_type'] = instance_type
+                        item['availability_zone'] = availability_zone
+                        item['region'] = self.region_name
+                        item['no_workers'] = worker.worker_processes
+                        item['spot_memory_mb'] = worker.memory
+                        item['spot_vcpu'] = self.instance_types[instance_type]
+                        result.append(item)
+        return result
+
     def _create_ssh_key(self):
         """
         Creates a new ssh key pair
@@ -254,24 +290,6 @@ class AWSEC2Backend:
         self.master.ssh_credentials.pop('password')
         self.master.get_instance_data()
 
-    def _request_spot_price(self):
-        """
-        Requests the SPOT price
-        """
-        if self.config['request_spot_instances']:
-            wit = self.config["worker_instance_type"]
-            logger.debug(f'Requesting current spot price for worker VMs of type {wit}')
-            response = self.ec2_client.describe_spot_price_history(
-                EndTime=datetime.today(), InstanceTypes=[wit],
-                ProductDescriptions=['Linux/UNIX (Amazon VPC)'],
-                StartTime=datetime.today()
-            )
-            spot_prices = []
-            for az in response['SpotPriceHistory']:
-                spot_prices.append(float(az['SpotPrice']))
-            self.config["spot_price"] = max(spot_prices)
-            logger.debug(f'Current spot instance price for {wit} is ${self.config["spot_price"]}')
-
     def _get_all_instance_types(self):
         """
         Gets all instance types and their CPU COUNT
@@ -338,8 +356,6 @@ class AWSEC2Backend:
             self._create_ssh_key()
             # Requests the Ubuntu image ID
             self._request_image_id()
-            # Request SPOT price
-            self._request_spot_price()
             # Request instance types
             self._get_all_instance_types()
 
@@ -438,6 +454,14 @@ class AWSEC2Backend:
                 "DefaultTargetCapacityType": "spot",
                 "TargetCapacityUnitType": "memory-mib",
             },
+            TagSpecifications=[
+                {
+                    'ResourceType': 'instance',
+                    'Tags': [
+                        {'Key': 'Name', 'Value': 'lithops-worker-aws'}
+                    ]
+                }
+            ],
             Type="instant",
         )
 
@@ -460,21 +484,31 @@ class AWSEC2Backend:
         if response.status_code != 200:
             raise Exception(f"Could not query the oracle: {response.text}")
 
-        instances_to_request = {}
+        instances_to_request = []
         for item, value in response.json()[0].items():
             if item[0] == '(':
-                instances_to_request[ast.literal_eval(item)[0]] = value
+                instance_type = ast.literal_eval(item)[0]
+                zone = ast.literal_eval(item)[1]
+                count = value
+                instances_to_request.append((instance_type, zone, count))
+                logger.debug(f"KMU {policy}: Requesting {instance_type} in {zone} with {count} instances")
 
         counts_list = []
-        for it, count in instances_to_request.items():
+        for _, _, count in instances_to_request:
             counts_list.append(count)
 
         lcm = math.lcm(*counts_list)
 
+        zone_to_az = {}
+        response = self.ec2_client.describe_availability_zones()
+        for az in response['AvailabilityZones']:
+            zone_to_az[az['ZoneId']] = az['ZoneName']
+
         overrides = []
-        for it, count in instances_to_request.items():
+        for it, zone, count in instances_to_request:
             logger.info(f"KMU {policy}: requesting {count} instances of type {it}")
             overrides.append({'InstanceType': it,
+                              'AvailabilityZone': zone_to_az[zone],
                               'WeightedCapacity': lcm / count})
 
         response = self.ec2_client.create_fleet(
@@ -496,6 +530,14 @@ class AWSEC2Backend:
                 "TotalTargetCapacity": lcm * len(overrides),
                 "DefaultTargetCapacityType": "spot"
             },
+            TagSpecifications=[
+                {
+                    'ResourceType': 'instance',
+                    'Tags': [
+                        {'Key': 'Name', 'Value': 'lithops-worker-kmu'}
+                    ]
+                }
+            ],
             Type="instant"
         )
 
@@ -727,17 +769,28 @@ class AWSEC2Backend:
 
     def clean(self, all=False):
         """
-        Clean all the VPC resources
+        Clean all the resources
         """
+        import shutil
+
         logger.info('Cleaning AWS EC2 resources')
 
         if not self.ec2_data:
-            return True
+            return
 
-        if self.mode == StandaloneMode.CONSUME.value:
-            return True
-        else:
-            self._delete_vm_instances(all=all)
+        self._delete_vm_instances(all=all)
+        self._delete_ssh_key()
+
+        if os.path.exists(self.cache_dir):
+            shutil.rmtree(self.cache_dir)
+
+        self._delete_launch_template()
+
+    def _delete_launch_template(self):
+        try:
+            self.ec2_client.delete_launch_template(LaunchTemplateName=self.launch_template_name)
+        except ClientError as e:
+            pass
 
     def clear(self, job_keys=None):
         """

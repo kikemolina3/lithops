@@ -19,7 +19,8 @@ install_requires = [
     'psutil',
     'networkx',
     'python-louvain',
-    'scipy'
+    'scipy',
+    'pandas'
 ]
 
 

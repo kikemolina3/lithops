@@ -44,8 +44,8 @@ For the moment, is provided a first setup for the experiment, but it can be easi
 
 And for these values, the execution info is:
 
-- PageRank: approx 10 seconds cpu-bound time
-- Community detection: approx 4 minutes cpu-bound time
+- PageRank: approx 10 seconds cpu-bound time; low RAM usage
+- Community detection: approx 400-650 seconds cpu-bound time; nearly 3GB RAM usage
 - Shortest paths: approx 4 minutes cpu-bound time
 - Memory per worker: ensure at least 4GB
 
@@ -85,13 +85,13 @@ Please, for executing the pipeline, follow the next steps carefully:
     ```
 6. Fill/replace the values in the configuration. We provide the explanation of the fields here:
     - `access_key_id`, `secret_access_key`, `session_token`: AWS credentials.
-    - `instance_role`: the role that the instances will assume.
+    - `instance_role`: the **IAM instance profile** that the instances will assume.
     - `allocation_strategy`: the strategy to use for spot allocation. Options: AWS strategies (`lowest-price`,
       `capacity-optimized`,
       `capacity-optimized-prioritized`,
       `diversified`,
       `price-capacity-optimized`) or KMU policies (`kmu-ppcp`, `kmu-ppf`)
-    - `target_ami`: Don't change this value. We provide a custom AMI with the required dependencies.
+    - `target_ami`: Don't change this value. We provide a public custom AMI with the required dependencies.
     - `runtime_memory` (MB): Ensure that the memory is enough for the pipeline. OOM errors can occur, and then the pipeline stuck with no error message.
     - `soft_dismantle_timeout` (s): The time to kill the spot instances after no activity periods.
 
@@ -102,7 +102,22 @@ Please, for executing the pipeline, follow the next steps carefully:
     The pipeline will start, and you will see the logs (`DEBUG` level for more info) of the execution.
 
 ## Collecting the data
+Lithops Futures API has a new ad-hoc method for collecting the data of the executions. This method is called `dump_stats_to_csv` and its purpose is to collect the data of the executions and store it in CSV format.
 
+For the moment, the collected data for each experiment is wrapped in a folder with the name of the experiment. Inside, you will find CSV files.
+
+```angular2html
+experiment-no1/
+    stats.csv
+    vms.csv
+```
+
+Inspect the CSV columns for getting the full information of the data collected.
+
+#### Plotting the execution
+You still can use the `plot` function for plotting the executions. This generate the default Lithops plots (info here).
+
+But is preferable to collect all the metrics (CSV files above), and then plot them with a custom script.
 
 ## Wiping the resources
 Sometimes, the pipeline can fail (or other issues) and the resources are not correctly cleaned. For this, you can use the
@@ -111,4 +126,10 @@ clean command, and all the cloud resources and local caches will be removed:
 ```bash
 lithops clean
 ```
+
+## Eviction management
+> ❌ Since the execution times are short, and the main objective of the experiment is to measure the power-price performance of the different policies, eviction management is not yet implemented.
+> 
+> If it is required for some experimentation requirements, please contact the repository owner for implementing it.
+
 

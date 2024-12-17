@@ -559,6 +559,28 @@ class FunctionExecutor:
         create_timeline(ftrs_to_plot, dst, figsize)
         create_histogram(ftrs_to_plot, dst, figsize)
 
+    def dump_stats_to_csv(self, folder="lithops_stats"):
+        """
+        Dumps the stats of all the futures to a csv file
+        """
+        import pandas as pd
+
+        # always will be AWSEC2Backend in KMU exp.
+        vms_data = self.compute_handler.backend.get_workers_history()
+
+        stats = []
+        for f in self.futures:
+            stats.append(f.stats)
+
+        if not os.path.exists(folder):
+            os.makedirs(folder)
+
+        df = pd.DataFrame(stats)
+        df.to_csv(f'{folder}/stats.csv', index=False)
+
+        df = pd.DataFrame(vms_data)
+        df.to_csv(f'{folder}/vms.csv', index=False)
+
     def clean(
         self,
         fs: Optional[Union[ResponseFuture, List[ResponseFuture]]] = None,
@@ -581,6 +603,8 @@ class FunctionExecutor:
         :parma on_exit: do not print logs on exit
         """
         global CLEANER_PROCESS
+
+        self.compute_handler.clean(all=True)
 
         def save_data_to_clean(data):
             with tempfile.NamedTemporaryFile(dir=CLEANER_DIR, delete=False) as temp:
