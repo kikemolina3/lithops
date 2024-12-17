@@ -121,13 +121,6 @@ You still can use the `plot` function for plotting the executions. This generate
 
 But is preferable to collect all the metrics (CSV files above), and then plot them with a custom script.
 
-## Wiping the resources
-Sometimes, the pipeline can fail (or other issues) and the resources are not correctly cleaned. For this, you can use the
-clean command, and all the cloud resources and local caches will be removed:
-
-```bash
-lithops clean
-```
 
 ## Eviction management
 > ❌ Since the execution times are short, and the main objective of the experiment is to measure the power-price performance of the different policies, eviction management is not yet implemented.

@@ -235,8 +235,9 @@ class StandaloneHandler:
 
             current_workers_new = set(self.backend.workers)
             new_workers = current_workers_new - current_workers_old
+            memory_allocated = [w.memory for w in new_workers]
             logger.debug(
-                f"Total worker VM instances created: {len(new_workers)}/{workers_to_create}"
+                f"Total new spot memory allocated: {memory_allocated}/{workers_to_create}"
             )
 
             return list(new_workers)

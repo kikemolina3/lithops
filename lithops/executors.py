@@ -108,7 +108,8 @@ class FunctionExecutor:
 
         self.data_cleaner = self.config['lithops'].get('data_cleaner', True)
         if self.data_cleaner and not self.is_lithops_worker:
-            atexit.register(self.clean, clean_cloudobjects=False, clean_fn=True, on_exit=True)
+            # atexit.register(self.clean, clean_cloudobjects=False, clean_fn=True, on_exit=True)
+            atexit.register(os.system, 'lithops clean')
 
         storage_config = extract_storage_config(self.config)
         self.internal_storage = InternalStorage(storage_config)
@@ -603,8 +604,6 @@ class FunctionExecutor:
         :parma on_exit: do not print logs on exit
         """
         global CLEANER_PROCESS
-
-        self.compute_handler.clean(all=True)
 
         def save_data_to_clean(data):
             with tempfile.NamedTemporaryFile(dir=CLEANER_DIR, delete=False) as temp:

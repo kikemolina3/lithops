@@ -378,7 +378,7 @@ class AWSEC2Backend:
         self._dump_ec2_data()
 
     def create_launch_template(self):
-        pub_key = f'{self.cache_dir}/{self.master.name}-id_rsa.pub'
+        pub_key = f'{self.cache_dir}/lithops-master-id_rsa.pub'
         user = self.config['ssh_username']
         if os.path.isfile(pub_key):
             with open(pub_key, 'r') as pk:
