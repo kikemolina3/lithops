@@ -14,11 +14,13 @@ import pickle
 import community.community_louvain as community_louvain
 
 NUM_FUNCTIONS = 4
-NODES = 500
-EDGE_PROB = 0.2
-N_DIJKSTRA = 50
-BUCKET = "graph-analysis"
-EXPERIMENT_NAME = "experiment-no1"
+NODES = 5000
+EDGE_PROB = 0.5
+N_DIJKSTRA = 150
+
+BUCKET = "graph-analysis"  # change me
+EXPERIMENT_NAME = "experiment-no1"  # change me
+
 
 # Tune the constant to adjust the execution times of the stages
 # For NODES = 5000, EDGE_PROB = 0.5, N_DIJKSTRA = 150:
