@@ -70,6 +70,7 @@ Please, for executing the pipeline, follow the next steps carefully:
         backend: aws_ec2
         storage: aws_s3
         log_level: DEBUG
+        execution_timeout: 3600  # increase if necessary
     
     aws:
         access_key_id: ...
