@@ -97,8 +97,8 @@ Please, for executing the pipeline, follow the next steps carefully:
     - `target_ami`: Don't change this value. We provide a public custom AMI with the required dependencies.
     - `runtime_memory` (MB): Ensure that the memory is enough for the pipeline. OOM errors can occur, and then the pipeline stuck with no error message.
     - `soft_dismantle_timeout` (s): The time to kill the spot instances after no activity periods.
-
-7. Run the pipeline:
+7. Enter `examples/graph_analytics.py` (modify constants if necessary) and check that all is defined as expected. 
+8. Run the pipeline:
     ```bash
     python3 examples/graph_analytics.py
     ```
