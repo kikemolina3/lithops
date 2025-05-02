@@ -566,8 +566,14 @@ class FunctionExecutor:
         """
         import pandas as pd
 
-        # always will be AWSEC2Backend in KMU exp.
-        vms_data = self.compute_handler.backend.get_workers_history()
+        if self.backend == "aws_ec2":
+            vms_data = self.compute_handler.backend.get_workers_history()
+        elif self.backend in ["k8s", "localhost"]:
+            vms_data = []
+        else:
+            raise NotImplementedError(
+                f"Stats dump not implemented for {self.backend} backend. "
+            )
 
         stats = []
         for f in self.futures:

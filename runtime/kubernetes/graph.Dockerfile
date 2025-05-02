@@ -36,7 +36,8 @@ RUN pip install --upgrade setuptools six pip \
         tblib \
         psutil \
         python-louvain \
-        networkx
+        networkx \
+        scipy
 
 ENV PYTHONUNBUFFERED TRUE
 
