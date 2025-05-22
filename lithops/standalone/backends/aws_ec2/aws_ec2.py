@@ -22,6 +22,7 @@ import logging
 import base64
 import boto3
 import botocore
+import requests
 from botocore.exceptions import ClientError
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
@@ -467,10 +468,7 @@ class AWSEC2Backend:
 
         return [instance_id for instance in response['Instances'] for instance_id in instance['InstanceIds']]
 
-    def _create_kmu_fleet(self, memory_to_create, total_calls):
-        import requests
-        import math
-
+    def _get_instances_kmu(self, memory_to_create, total_calls):
         if self.allocation_strategy not in ['kmu-ppf', 'kmu-ppcp']:
             raise Exception("Allocation strategy must be 'kmu-ppf' or 'kmu-ppcp'")
 
@@ -493,6 +491,39 @@ class AWSEC2Backend:
                 instances_to_request.append((instance_type, zone, count))
                 logger.debug(f"KMU {policy}: Requesting {instance_type} in {zone} with {count} instances")
 
+        return instances_to_request
+
+    def _get_instances_kubecaps(self, memory_to_create, total_calls):
+        endpoint = "https://26ak6xfpop3sm6xakm3w767gey0suamm.lambda-url.eu-west-1.on.aws/"
+        payload = {
+            "pod_count": total_calls,
+            "pod_cpu": 1,
+            "pod_mem": int(memory_to_create / (total_calls * 1024)),
+            "workload_intensity": "default",
+            "region": self.region_name
+        }
+        response = requests.get(endpoint, json=payload)
+        if response.status_code != 200:
+            raise Exception(f"Could not query the oracle: {response.text}")
+
+        instances_to_request = []
+        for item in response.json()['nodepool_config']:
+            instance_type = item['instance_type']
+            zone = item['availability_zone']
+            count = item['num_instances']
+            instances_to_request.append((instance_type, zone, count))
+            logger.debug(f"KMU: Requesting {count} instances of type {instance_type} in {zone}")
+
+        return instances_to_request
+
+    def _create_oracle_fleet(self, memory_to_create, total_calls):
+        import math
+
+        if self.allocation_strategy == "kubecaps":
+            instances_to_request = self._get_instances_kmu(memory_to_create, total_calls)
+        else:
+            instances_to_request = self._get_instances_kubecaps(memory_to_create, total_calls)
+
         counts_list = []
         for _, _, count in instances_to_request:
             counts_list.append(count)
@@ -506,9 +537,9 @@ class AWSEC2Backend:
 
         overrides = []
         for it, zone, count in instances_to_request:
-            logger.info(f"KMU {policy}: requesting {count} instances of type {it}")
+            logger.info(f"Method {self.allocation_strategy}: requesting {count} instances of type {it}")
             overrides.append({'InstanceType': it,
-                              'AvailabilityZone': zone_to_az[zone],
+                              'AvailabilityZone': zone_to_az[zone] or None,
                               'WeightedCapacity': lcm / count})
 
         response = self.ec2_client.create_fleet(
@@ -548,8 +579,8 @@ class AWSEC2Backend:
 
         self.create_launch_template()
 
-        if "kmu" in strategy:
-            instance_ids = self._create_kmu_fleet(memory_to_create, total_calls)
+        if strategy.startswith('k'):
+            instance_ids = self._create_oracle_fleet(memory_to_create, total_calls)
         else:
             instance_ids = self._create_aws_fleet(memory_to_create)
 
