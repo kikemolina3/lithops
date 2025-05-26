@@ -13,12 +13,12 @@ import networkx as nx
 import pickle
 import community.community_louvain as community_louvain
 
-NUM_FUNCTIONS = 4
-NODES = 5000
+NUM_FUNCTIONS = 48
+NODES = 4000
 EDGE_PROB = 0.5
 N_DIJKSTRA = 150
 
-BUCKET = "graph-analysis"  # change me
+BUCKET = "graph-analysis-4000"  # change me
 EXPERIMENT_NAME = "experiment-no1"  # change me
 
 
@@ -39,12 +39,11 @@ def gen_graphs(n):
         last_index = int(storage.list_objects(BUCKET, "graphs/")[-1]["Key"][-1]) + 1
     except (IndexError, KeyError):
         last_index = 0
-    graphs = []
+
     for i in range(last_index, n):
         G = nx.erdos_renyi_graph(NODES, EDGE_PROB)
-        graphs.append(G)
-    for i, graph in enumerate(graphs):
-        storage.put_object(BUCKET, "graphs/graph{}".format(i), pickle.dumps(graph))
+        storage.put_object(BUCKET, "graphs/graph{}".format(i), pickle.dumps(G))
+        del G
 
 
 def compute_pagerank(obj):
@@ -74,11 +73,10 @@ def first_n_dijkstra(obj):
 
 if __name__ == "__main__":
     storage = lithops.Storage()
-    gen_graphs(NUM_FUNCTIONS)
+    # gen_graphs(NUM_FUNCTIONS)
     fexec = lithops.FunctionExecutor()
-    fexec.map(community_detection, BUCKET + "/graphs/")
+    fexec.map(community_detection, BUCKET + "/graphs/").get_result()
     fexec.map(compute_pagerank, BUCKET + "/graphs/").get_result()
-    fexec.map(first_n_dijkstra, BUCKET + "/graphs/")
-    fexec.wait()
+    fexec.map(first_n_dijkstra, BUCKET + "/graphs/").get_result()
     fexec.dump_stats_to_csv(EXPERIMENT_NAME)
     print("Finished")
