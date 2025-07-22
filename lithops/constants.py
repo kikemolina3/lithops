@@ -102,6 +102,7 @@ SERVERLESS_BACKENDS = [
     'knative',
     'openwhisk',
     'aws_lambda',
+    'aws_ecs',
     'aws_batch',
     'gcp_cloudrun',
     'gcp_functions',
