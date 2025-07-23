@@ -55,7 +55,7 @@ if __name__ == '__main__':
 
         logger.info("Lithops v{} - Starting AWS ECS (Fargate) execution".format(__version__))
 
-        def get_job_index(payload):
+        def get_job_index(config, payload):
             import requests
 
             metadata_url = os.environ.get('ECS_CONTAINER_METADATA_URI_V4')
@@ -69,10 +69,12 @@ if __name__ == '__main__':
             task_metadata = response.json()
             task_arn = task_metadata['TaskARN']
 
-            internal_storage = InternalStorage(payload)
-            return int(internal_storage.get_data(task_arn).decode('utf-8'))
+            internal_storage = InternalStorage(config)
+            activation_ids = internal_storage.get_data(f"{payload['executor_id']}-{payload['job_id']}-activations")
+            activations_id = json.loads(activation_ids.decode('utf-8'))[task_arn]
+            return int(activations_id)
 
-        job_index = get_job_index(lithops_config)
+        job_index = get_job_index(lithops_config, lithops_payload)
         lithops_payload['JOB_INDEX'] = job_index
         logger.info('Job index {}'.format(job_index))
 

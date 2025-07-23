@@ -88,6 +88,8 @@ class AWSECSBackend:
         package = f'lithops_v{__version__.replace(".", "")}_{self.user_key}'
         self.package = f"{package}_{self.namespace}" if self.namespace else package
 
+        self._cluster_name = f'{self.package}_cluster'
+
         msg = COMPUTE_CLI_MSG.format('AWS ECS (Fargate)')
         if self.namespace:
             logger.info(f"{msg} - Region: {self.region} - Namespace: {self.namespace}")
@@ -287,7 +289,8 @@ class AWSECSBackend:
         if mount_points:
             container_def['mountPoints'] = mount_points
 
-        # TODO: create log group in CW
+        self._create_log_group()
+
         container_def['logConfiguration'] = {
             'logDriver': 'awslogs',
             'options': {
@@ -301,15 +304,13 @@ class AWSECSBackend:
             self.ecs_client.register_task_definition(
                 family=task_name,
                 requiresCompatibilities=['FARGATE'],
-                # TODO: parametrise
-                cpu="512",
-                memory="1024",
+                cpu=str(int(self.ecs_config['runtime_cpu'] * 1024)),
+                memory=str(self.ecs_config['runtime_memory']),
                 networkMode='awsvpc',
                 executionRoleArn=self.role_arn,
                 containerDefinitions=[container_def],
                 volumes=volumes,
-                # TODO: improve ephemeral storage decision
-                ephemeralStorage={'sizeInGiB': max(21, int(self.ecs_config['ephemeral_storage'] / 1024))},
+                ephemeralStorage={'sizeInGiB': int(self.ecs_config['ephemeral_storage'])},
                 tags=[
                     {'key': 'runtime_name', 'value': runtime_name},
                     {'key': 'lithops_version', 'value': __version__},
@@ -325,9 +326,8 @@ class AWSECSBackend:
             else:
                 raise e
 
-        # TODO: parametrise cluster name
         try:
-            self.ecs_client.create_cluster(clusterName='default')
+            self.ecs_client.create_cluster(clusterName=self._cluster_name)
         except botocore.exceptions.ClientError as e:
             if e.response['Error']['Code'] == 'ClusterAlreadyExistsException':
                 logger.debug('Cluster "default" already exists')
@@ -336,6 +336,17 @@ class AWSECSBackend:
 
         self._wait_for_task_definition_ready(task_name)
         logger.debug(f'OK --> Created ECS task definition {task_name}')
+
+    def _create_log_group(self):
+        cloudwatch_client = self.aws_session.client('logs', region_name=self.region)
+        log_group_name = '/ecs/lithops'
+        try:
+            cloudwatch_client.create_log_group(logGroupName=log_group_name)
+        except Exception as e:
+            if 'ResourceAlreadyExistsException' in str(e):
+                logger.debug(f'Log group "{log_group_name}" already exists')
+            else:
+                raise e
 
     def deploy_runtime(self, runtime_name, memory, timeout):
         """
@@ -452,7 +463,6 @@ class AWSECSBackend:
             }]
         }
 
-        # TODO: create automatically?
         network_config = {
             'awsvpcConfiguration': {
                 'subnets': self.ecs_config['subnets'],
@@ -461,12 +471,14 @@ class AWSECSBackend:
             }
         }
 
-        # only can be called in batches of 10
+        total_tasks = []
+
+        # Invoking in batches of 10 tasks (ECS limit)
         for batch_index in range(0, total_workers, 10):
             batch_size = min(10, total_workers - batch_index)
 
             response = self.ecs_client.run_task(
-                cluster='default',
+                cluster=self._cluster_name,
                 launchType='FARGATE',
                 taskDefinition=task_def_name,
                 overrides=overrides,
@@ -478,11 +490,14 @@ class AWSECSBackend:
             if not tasks:
                 raise Exception(f'No task started for task {task_def_name}: {response}')
 
-            task_arns = [task['taskArn'] for task in tasks]
-            for relative_task_id, task_arn in enumerate(task_arns):
-                self.internal_storage.put_data(task_arn, str(batch_index + relative_task_id).encode('utf-8'))
+            total_tasks.extend(tasks)
 
-        return None
+        activations_ids_key = f'{executor_id}-{job_id}-activations'
+        task_arns = [task['taskArn'] for task in total_tasks]
+        task_arns_dict = {}
+        for task_id, task_arn in enumerate(task_arns):
+            task_arns_dict[task_arn] = task_id
+        self.internal_storage.put_data(activations_ids_key, json.dumps(task_arns_dict).encode('utf-8'))
 
     def get_runtime_key(self, runtime_name, runtime_memory, version=__version__):
         """
@@ -552,7 +567,7 @@ class AWSECSBackend:
         }
 
         response = self.ecs_client.run_task(
-            cluster='default',
+            cluster=self._cluster_name,
             launchType='FARGATE',
             taskDefinition=task_name,
             overrides=overrides,

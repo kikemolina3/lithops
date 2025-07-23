@@ -46,33 +46,29 @@ AVAILABLE_PY_RUNTIMES = {
 USER_RUNTIME_PREFIX = 'lithops.user_runtimes'
 
 DEFAULT_CONFIG_KEYS = {
-    'runtime_timeout': 180,  # Default: 3600 seconds => 1 hour
-    'runtime_memory': 256,  # Default memory: 256 MB
+    'runtime_timeout': 3600,  # Default: 3600 seconds => 1 hour
+    'runtime_memory': 512,  # Default memory: 512 MB
+    'runtime_cpu': 0.25,
     'max_workers': 100,
     'worker_processes': 1,
     'invoke_pool_threads': 64,
     'architecture': 'x86_64',
-    # TODO: control ephemeral storage
-    'ephemeral_storage': 512,
+    'ephemeral_storage': 21,  # Min 21GB in Fargate
     'env_vars': {},
     'user_tags': {},
     'vpc': {'subnets': [], 'security_groups': []},
     'efs': []
 }
 
-REQ_PARAMS = ('execution_role',)
+REQ_PARAMS = ('execution_role', 'security_groups', 'subnets')
 
-# RUNTIME_TIMEOUT_MAX = No timeout
+RUNTIME_MEMORY_MIN = 512  # Min. memory: 512 MB
+RUNTIME_MEMORY_MAX = 120*1024  # Max. memory: 120 GB
 
-# TODO: set ECS Fargate values
-RUNTIME_MEMORY_MIN = 128  # Max. memory: 128 MB
-RUNTIME_MEMORY_MAX = 10240  # Max. memory: 10240 MB
-
-RUNTIME_TMP_SZ_MIN = 512
-RUNTIME_TMP_SZ_MAX = 10240
+RUNTIME_TMP_SZ_MIN = 21  # Min. ephemeral storage: 21 GB
+RUNTIME_TMP_SZ_MAX = 200  # Max. ephemeral storage: 200 GB
 
 
-# TODO: adapt to aws_ecs specs
 def load_config(config_data):
 
     if not config_data['aws_ecs']:
@@ -104,34 +100,32 @@ def load_config(config_data):
                        "the minimum amount".format(RUNTIME_MEMORY_MIN, config_data['aws_ecs']['runtime_memory']))
         config_data['aws_ecs']['runtime_memory'] = RUNTIME_MEMORY_MIN
 
-    # if config_data['aws_ecs']['runtime_timeout'] > RUNTIME_TIMEOUT_MAX:
-    #     logger.warning("Timeout set to {} - {} exceeds the "
-    #                    "maximum amount".format(RUNTIME_TIMEOUT_MAX, config_data['aws_ecs']['runtime_timeout']))
-    #     config_data['aws_ecs']['runtime_timeout'] = RUNTIME_TIMEOUT_MAX
+    cpu_memory_configs = {
+        0.25: [512, 1024, 2048],
+        0.5: list(range(1, 5)) * 1024,
+        1: list(range(2, 9)) * 1024,
+        2: list(range(4, 17)) * 1024,
+        4: list(range(8, 31)) * 1024,
+        8: list(range(16, 61)) * 1024,
+        16: list(range(32, 121)) * 1024,
+    }
+    if config_data['aws_ecs']['runtime_cpu'] not in cpu_memory_configs:
+        raise Exception(f"Invalid CPU value {config_data['aws_ecs']['runtime_cpu']} for AWS ECS backend. "
+                        f"Valid values are: {list(cpu_memory_configs.keys())}")
+    if config_data['aws_ecs']['runtime_memory'] not in cpu_memory_configs[config_data['aws_ecs']['runtime_cpu']]:
+        raise Exception(f"Invalid memory value {config_data['aws_ecs']['runtime_memory']} for "
+                        f"AWS ECS backend with {config_data['aws_ecs']['runtime_cpu']} CPU. "
+                        f"Valid values are: {cpu_memory_configs[config_data['aws_ecs']['runtime_cpu']]}")
 
-    if not {'subnets', 'security_groups'}.issubset(set(config_data['aws_ecs']['vpc'])):
-        raise Exception("'subnets' and 'security_groups' are mandatory sections under 'aws_ecs/vpc'")
-
-    if not isinstance(config_data['aws_ecs']['vpc']['subnets'], list):
+    if not isinstance(config_data['aws_ecs']['subnets'], list):
         raise Exception("Unknown type {} for 'aws_ecs/"
-                        "vpc/subnet' section".format(type(config_data['aws_ecs']['vpc']['subnets'])))
+                        "vpc/subnet' section".format(type(config_data['aws_ecs']['subnets'])))
 
-    if not isinstance(config_data['aws_ecs']['vpc']['security_groups'], list):
+    if not isinstance(config_data['aws_ecs']['security_groups'], list):
         raise Exception("Unknown type {} for 'aws_ecs/"
-                        "vpc/security_groups' section".format(type(config_data['aws_ecs']['vpc']['security_groups'])))
+                        "vpc/security_groups' section".format(type(config_data['aws_ecs']['security_groups'])))
 
-    if not isinstance(config_data['aws_ecs']['efs'], list):
-        raise Exception("Unknown type {} for "
-                        "'aws_ecs/efs' section".format(type(config_data['aws_ecs']['vpc']['security_groups'])))
-
-    if not all(
-            ['access_point' in efs_conf and 'mount_path' in efs_conf for efs_conf in config_data['aws_ecs']['efs']]):
-        raise Exception("List of 'access_point' and 'mount_path' mandatory in 'aws_ecs/efs section'")
-
-    if not all([efs_conf['mount_path'].startswith('/mnt') for efs_conf in config_data['aws_ecs']['efs']]):
-        raise Exception("All mount paths must start with '/mnt' on 'aws_ecs/efs/*/mount_path' section")
-
-    # Lambda runtime config
+    # Fargate runtime config
     if config_data['aws_ecs']['ephemeral_storage'] < RUNTIME_TMP_SZ_MIN \
             or config_data['aws_ecs']['ephemeral_storage'] > RUNTIME_TMP_SZ_MAX:
         raise Exception(f'Ephemeral storage value must be between {RUNTIME_TMP_SZ_MIN} and {RUNTIME_TMP_SZ_MAX}')
