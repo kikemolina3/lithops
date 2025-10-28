@@ -172,6 +172,7 @@ class LocalhostHandlerV1:
         return {
             'runtime_name': self.config['runtime'],
             'runtime_memory': self.config.get('runtime_memory'),
+            'runtime_cpu': self.config.get('runtime_cpu'),
             'runtime_timeout': self.config.get('runtime_timeout'),
             'max_workers': self.config['max_workers'],
         }
@@ -346,8 +347,12 @@ class ContainerEnvironment(ExecutionEnvironment):
         cmd = f'{self.docker_path} run --name lithops_metadata '
         cmd += f'--user {self.uid}:{self.gid} ' if self.is_unix_system and not self.is_podman else ''
         cmd += f'--env USER={os.getenv("USER", "root")} '
+        cmd += f'--cpus "{self.config.get("runtime_cpu")}" ' if self.config.get('runtime_cpu') else ''
+        cmd += f'--memory "{self.config.get("runtime_memory")}m" ' if self.config.get('runtime_memory') else ''
         cmd += f'--rm -v {tmp_path}:/tmp --entrypoint "python3" '
         cmd += f'{self.runtime_name} /tmp/{USER_TEMP_DIR}/localhost-runner.py get_metadata'
+
+        logger.info(cmd)
 
         process = sp.run(
             shlex.split(cmd), check=True, stdout=sp.PIPE,
@@ -370,8 +375,12 @@ class ContainerEnvironment(ExecutionEnvironment):
         cmd += '--gpus all ' if self.use_gpu else ''
         cmd += f'--user {self.uid}:{self.gid} ' if self.is_unix_system and not self.is_podman else ''
         cmd += f'--env USER={os.getenv("USER", "root")} '
+        cmd += f'--cpus "{self.config.get("runtime_cpu")}" ' if self.config.get('runtime_cpu') else ''
+        cmd += f'--memory "{self.config.get("runtime_memory")}m" ' if self.config.get('runtime_memory') else ''
         cmd += f'--rm -v {tmp_path}:/tmp --entrypoint "python3" '
         cmd += f'{self.runtime_name} /tmp/{USER_TEMP_DIR}/localhost-runner.py run_job {job_filename}'
+
+        logger.info(cmd)
 
         process = sp.Popen(shlex.split(cmd), stdout=sp.PIPE, stderr=sp.PIPE, start_new_session=True)
         self.jobs[job_key] = process

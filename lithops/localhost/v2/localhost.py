@@ -384,6 +384,10 @@ class ContainerEnvironment(ExecutionEnvironment):
                 check=True, stdout=sp.PIPE, universal_newlines=True
             )
 
+    def _get_memory_limit(self):
+        # with os
+        return self.config.get('runtime_memory', '512')
+
     def get_metadata(self):
         if not os.path.isfile(RUNNER_FILE):
             self.setup()
@@ -395,8 +399,12 @@ class ContainerEnvironment(ExecutionEnvironment):
         cmd = f'{self.docker_path} run --name lithops_metadata '
         cmd += f'--user {self.uid}:{self.gid} ' if self.is_unix_system and not self.is_podman else ''
         cmd += f'--env USER={os.getenv("USER", "root")} '
+        cmd += f'--cpus "{self.config.get("runtime_cpu")}" ' if self.config.get('runtime_cpu') else ''
+        cmd += f'--memory "{self.config.get("runtime_memory")}m" ' if self.config.get('runtime_memory') else ''
         cmd += f'--rm -v {tmp_path}:/tmp --entrypoint "python3" '
         cmd += f'{self.runtime_name} /tmp/{USER_TEMP_DIR}/localhost-runner.py get_metadata'
+
+        logger.info(cmd)
 
         process = sp.run(
             shlex.split(cmd), check=True, stdout=sp.PIPE,
@@ -416,8 +424,12 @@ class ContainerEnvironment(ExecutionEnvironment):
         cmd += '--gpus all ' if self.use_gpu else ''
         cmd += f'--user {self.uid}:{self.gid} ' if self.is_unix_system and not self.is_podman else ''
         cmd += f'--env USER={os.getenv("USER", "root")} '
+        cmd += f'--cpus "{self.config.get("runtime_cpu")}" ' if self.config.get('runtime_cpu') else ''
+        cmd += f'--memory "{self.config.get("runtime_memory")}m" ' if self.config.get('runtime_memory') else ''
         cmd += f'--rm -v {tmp_path}:/tmp -it --detach '
         cmd += f'--entrypoint=/bin/bash {self.runtime_name}'
+
+        logger.info(cmd)
 
         self.container_process = sp.Popen(shlex.split(cmd), stdout=sp.DEVNULL, start_new_session=True)
         self.container_process.communicate()  # blocks until the process finishes
